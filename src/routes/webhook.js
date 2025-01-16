@@ -5,7 +5,6 @@ import pool from '../db/init.js';
 
 const router = express.Router();
 
-// Verify Mailgun webhook signature
 function verifyWebhookSignature(timestamp, token, signature) {
   const encodedToken = crypto
     .createHmac('sha256', process.env.MAILGUN_WEBHOOK_SIGNING_KEY)
@@ -15,10 +14,8 @@ function verifyWebhookSignature(timestamp, token, signature) {
   return encodedToken === signature;
 }
 
-// Webhook endpoint for receiving emails
 router.post('/email/incoming', async (req, res) => {
   try {
-    // Verify the webhook signature from Mailgun
     const timestamp = req.body.signature.timestamp;
     const token = req.body.signature.token;
     const signature = req.body.signature.signature;
@@ -36,7 +33,7 @@ router.post('/email/incoming', async (req, res) => {
       attachments
     } = req.body;
 
-    // Validate the recipient email exists in our system
+    // Get the temp_email record
     const [tempEmails] = await pool.query(
       'SELECT id FROM temp_emails WHERE email = ? AND expires_at > NOW()',
       [recipient]
@@ -49,21 +46,20 @@ router.post('/email/incoming', async (req, res) => {
     const tempEmailId = tempEmails[0].id;
     const emailId = uuidv4();
 
-    // Store the received email (prefer HTML body if available)
+    // Store the received email
     await pool.query(`
-      INSERT INTO received_emails (id, temp_email_id, from_email, subject, body)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO received_emails (id, temp_email_id, from_email, subject, body, received_at)
+      VALUES (?, ?, ?, ?, ?, NOW())
     `, [emailId, tempEmailId, sender, subject, bodyHtml || bodyPlain]);
 
-    // If there are attachments, store them
+    // Store attachments if any
     if (attachments && Object.keys(attachments).length > 0) {
       for (const attachment of Object.values(attachments)) {
-        const attachmentId = uuidv4();
         await pool.query(`
           INSERT INTO email_attachments (id, email_id, filename, content_type, size, url)
           VALUES (?, ?, ?, ?, ?, ?)
         `, [
-          attachmentId,
+          uuidv4(),
           emailId,
           attachment.name,
           attachment['content-type'],
