@@ -5,20 +5,46 @@ import pool from '../db/init.js';
 
 const router = express.Router();
 
-function verifyWebhookSignature(timestamp, token, signature) {
-  console.log('Verifying webhook signature:');
-  console.log('Timestamp:', timestamp);
-  console.log('Token:', token);
-  console.log('Received signature:', signature);
+function verifyWebhookSignature(req) {
+  console.log('Verifying webhook signature');
   
   try {
-    const encodedToken = crypto
-      .createHmac('sha256', process.env.MAILGUN_WEBHOOK_SIGNING_KEY)
-      .update(timestamp.concat(token))
-      .digest('hex');
-    
-    console.log('Calculated signature:', encodedToken);
-    return encodedToken === signature;
+    // Get signature data from Mailgun's standard headers
+    const timestamp = req.get('X-Mailgun-Timestamp');
+    const token = req.get('X-Mailgun-Token');
+    const signature = req.get('X-Mailgun-Signature');
+
+    // Also try to get from the event data structure
+    const eventSignature = req.body?.signature;
+    if (eventSignature) {
+      console.log('Found signature in event data:', {
+        timestamp: eventSignature.timestamp,
+        token: eventSignature.token,
+        signature: eventSignature.signature
+      });
+      
+      const encodedToken = crypto
+        .createHmac('sha256', process.env.MAILGUN_WEBHOOK_SIGNING_KEY)
+        .update(eventSignature.timestamp.concat(eventSignature.token))
+        .digest('hex');
+      
+      return encodedToken === eventSignature.signature;
+    }
+
+    // If we have header data, verify that
+    if (timestamp && token && signature) {
+      console.log('Found signature in headers:', { timestamp, token, signature });
+      
+      const encodedToken = crypto
+        .createHmac('sha256', process.env.MAILGUN_WEBHOOK_SIGNING_KEY)
+        .update(timestamp.concat(token))
+        .digest('hex');
+      
+      return encodedToken === signature;
+    }
+
+    console.log('No valid signature data found');
+    return false;
   } catch (error) {
     console.error('Signature verification error:', error);
     return false;
@@ -28,31 +54,32 @@ function verifyWebhookSignature(timestamp, token, signature) {
 router.post('/email/incoming', async (req, res) => {
   try {
     console.log('Received webhook payload:', JSON.stringify(req.body, null, 2));
-    
-    // Extract signature details from headers or body
-    const timestamp = req.get('X-Mailgun-Timestamp') || req.body.timestamp;
-    const token = req.get('X-Mailgun-Token') || req.body.token;
-    const signature = req.get('X-Mailgun-Signature') || req.body.signature;
+    console.log('Request headers:', req.headers);
 
-    console.log('Signature details:', { timestamp, token, signature });
-
-    if (!timestamp || !token || !signature) {
-      console.log('Missing signature components');
-      // Instead of returning 401, accept the request for now during testing
-      console.log('Proceeding without signature verification during testing');
-    } else if (!verifyWebhookSignature(timestamp, token, signature)) {
-      console.log('Signature verification failed');
-      // Instead of returning 401, accept the request for now during testing
-      console.log('Proceeding despite signature verification failure during testing');
-    }
+    // Verify the signature
+    const isValid = verifyWebhookSignature(req);
+    console.log('Signature verification result:', isValid);
 
     // Extract email details from the Mailgun payload
-    const recipient = req.body['recipient'] || req.body.recipient;
-    const sender = req.body['sender'] || req.body.from;
-    const subject = req.body['subject'] || req.body['message-headers']?.subject;
-    const bodyHtml = req.body['body-html'] || req.body.html;
-    const bodyPlain = req.body['body-plain'] || req.body.text;
-    const attachments = req.body.attachments || {};
+    let recipient, sender, subject, bodyHtml, bodyPlain;
+
+    if (req.body['event-data']) {
+      // Handle event webhook format
+      const eventData = req.body['event-data'];
+      const message = eventData.message || {};
+      recipient = eventData.recipient;
+      sender = message.headers?.from || eventData.sender;
+      subject = message.headers?.subject;
+      bodyHtml = message['body-html'];
+      bodyPlain = message['body-plain'];
+    } else {
+      // Handle legacy webhook format
+      recipient = req.body.recipient;
+      sender = req.body.sender || req.body.from;
+      subject = req.body.subject;
+      bodyHtml = req.body['body-html'];
+      bodyPlain = req.body['body-plain'];
+    }
 
     console.log('Extracted email details:', {
       recipient,
@@ -90,28 +117,6 @@ router.post('/email/incoming', async (req, res) => {
       INSERT INTO received_emails (id, temp_email_id, from_email, subject, body, received_at)
       VALUES (?, ?, ?, ?, ?, NOW())
     `, [emailId, tempEmailId, sender, subject, bodyHtml || bodyPlain]);
-
-    // Store attachments if any
-    if (attachments && Object.keys(attachments).length > 0) {
-      console.log('Processing attachments:', Object.keys(attachments).length);
-      
-      for (const attachment of Object.values(attachments)) {
-        const attachmentId = uuidv4();
-        console.log('Storing attachment:', attachment.name);
-        
-        await pool.query(`
-          INSERT INTO email_attachments (id, email_id, filename, content_type, size, url)
-          VALUES (?, ?, ?, ?, ?, ?)
-        `, [
-          attachmentId,
-          emailId,
-          attachment.name,
-          attachment['content-type'],
-          attachment.size,
-          attachment.url
-        ]);
-      }
-    }
 
     console.log('Email processed successfully');
     res.status(200).json({ message: 'Email received and stored successfully' });
