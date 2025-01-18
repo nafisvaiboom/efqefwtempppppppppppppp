@@ -11,9 +11,9 @@ const pool = mysql.createPool({
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
-  connectTimeout: 60000, // Increased timeout for more reliable connections
+  connectTimeout: 60000,
   ssl: {
-    rejectUnauthorized: false // Required for some hosting providers
+    rejectUnauthorized: false
   }
 });
 
@@ -25,7 +25,6 @@ export async function initializeDatabase() {
     const connection = await pool.getConnection();
     console.log('Successfully connected to database');
     
-    // Create tables with proper foreign key constraints and indexes
     await connection.query(`
       CREATE TABLE IF NOT EXISTS users (
         id VARCHAR(36) PRIMARY KEY,
