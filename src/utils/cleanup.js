@@ -1,16 +1,14 @@
 import pool from '../db/init.js';
 
 export async function cleanupOldEmails() {
-  const DAYS_TO_KEEP = 4; // Keep emails for 4 days
-  
   try {
     console.log('Starting email cleanup process...');
     
-    // Delete emails older than DAYS_TO_KEEP days
+    // Delete emails older than 3 days
     const [result] = await pool.query(`
       DELETE FROM received_emails 
-      WHERE received_at < DATE_SUB(NOW(), INTERVAL ? DAY)
-    `, [DAYS_TO_KEEP]);
+      WHERE received_at < DATE_SUB(NOW(), INTERVAL 3 DAY)
+    `);
 
     console.log(`Cleanup completed. Deleted ${result.affectedRows} old emails.`);
     

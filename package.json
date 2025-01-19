@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "start": "node src/index.js",
-    "dev": "nodemon src/index.js"
+    "dev": "nodemon src/index.js",
+    "build": "mkdir -p dist && cp -r src/* dist/"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
@@ -14,7 +15,8 @@
     "jsonwebtoken": "^9.0.2",
     "mysql2": "^3.9.2",
     "uuid": "^9.0.1",
-    "crypto": "^1.0.1"
+    "crypto": "^1.0.1",
+    "multer": "^1.4.5-lts.1"
   },
   "devDependencies": {
     "nodemon": "^3.1.0"
