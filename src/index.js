@@ -7,6 +7,7 @@ import authRoutes from './routes/auth.js';
 import emailRoutes from './routes/emails.js';
 import domainRoutes from './routes/domains.js';
 import webhookRoutes from './routes/webhook.js';
+import messageRoutes from './routes/messages.js';
 
 dotenv.config();
 
@@ -15,17 +16,23 @@ const port = process.env.PORT || 3000;
 
 // Configure CORS
 app.use(cors({
-  origin: [
-    'https://yourdomain.com',
-    'https://www.yourdomain.com',
-    // Add any other domains that need access
-  ],
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  origin: process.env.CORS_ORIGINS ? process.env.CORS_ORIGINS.split(',') : '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true
+  credentials: false // Disable credentials since we're using token auth
 }));
 
-app.use(express.json());
+// Increase payload limit for email content
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Add security headers
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  next();
+});
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -37,6 +44,16 @@ app.use('/auth', authRoutes);
 app.use('/emails', emailRoutes);
 app.use('/domains', domainRoutes);
 app.use('/webhook', webhookRoutes);
+app.use('/messages', messageRoutes);
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error('Global error handler:', err);
+  res.status(500).json({ 
+    error: 'Internal server error',
+    message: process.env.NODE_ENV === 'development' ? err.message : undefined
+  });
+});
 
 // Schedule cleanup to run every 24 hours
 const CLEANUP_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
@@ -56,7 +73,7 @@ function scheduleCleanup() {
 initializeDatabase().then(() => {
   app.listen(port, () => {
     console.log(`Server running on port ${port}`);
-    scheduleCleanup(); // Start the cleanup schedule
+    scheduleCleanup();
     console.log('Email cleanup scheduler started');
   });
 }).catch(error => {
