@@ -7,7 +7,6 @@ import authRoutes from './routes/auth.js';
 import emailRoutes from './routes/emails.js';
 import domainRoutes from './routes/domains.js';
 import webhookRoutes from './routes/webhook.js';
-import messageRoutes from './routes/messages.js';
 
 dotenv.config();
 
@@ -21,7 +20,7 @@ app.use(cors({
     'https://www.yourdomain.com',
     // Add any other domains that need access
   ],
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
 }));
@@ -38,7 +37,6 @@ app.use('/auth', authRoutes);
 app.use('/emails', emailRoutes);
 app.use('/domains', domainRoutes);
 app.use('/webhook', webhookRoutes);
-app.use('/messages', messageRoutes);
 
 // Schedule cleanup to run every 24 hours
 const CLEANUP_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours in milliseconds

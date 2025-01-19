@@ -2,19 +2,17 @@ import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import crypto from 'crypto';
 import pool from '../db/init.js';
-import multer from 'multer';
 
 const router = express.Router();
-const upload = multer();
 
 function verifyWebhookSignature(formData) {
   console.log('Starting webhook signature verification');
   
   try {
     // Extract signature data from form data
-    const timestamp = formData['timestamp'] || formData.timestamp;
-    const token = formData['token'] || formData.token;
-    const signature = formData['signature'] || formData.signature;
+    const timestamp = formData['timestamp'];
+    const token = formData['token'];
+    const signature = formData['signature'];
 
     console.log('Received signature data:', {
       timestamp,
@@ -58,14 +56,14 @@ function verifyWebhookSignature(formData) {
   }
 }
 
-router.post('/email/incoming', upload.none(), async (req, res) => {
+router.post('/email/incoming', express.urlencoded({ extended: true }), async (req, res) => {
   console.log('Received webhook request');
   console.log('Content-Type:', req.headers['content-type']);
   
   try {
     // Log the raw body and parsed form data
     console.log('Raw body type:', typeof req.body);
-    console.log('Form data:', req.body);
+    console.log('Form data keys:', Object.keys(req.body));
 
     // Verify the webhook signature
     const isValid = verifyWebhookSignature(req.body);
@@ -82,13 +80,13 @@ router.post('/email/incoming', upload.none(), async (req, res) => {
 
     // Extract email data from the form
     const emailData = {
-      recipient: req.body['recipient'] || req.body.recipient,
-      sender: req.body['sender'] || req.body.from || req.body['from'],
-      subject: req.body['subject'] || req.body.subject,
-      bodyHtml: req.body['body-html'] || req.body['bodyHtml'],
-      bodyPlain: req.body['body-plain'] || req.body['bodyPlain'],
-      timestamp: req.body['timestamp'] || req.body.timestamp,
-      token: req.body['token'] || req.body.token
+      recipient: req.body['recipient'],
+      sender: req.body['sender'] || req.body['from'],
+      subject: req.body['subject'],
+      bodyHtml: req.body['body-html'],
+      bodyPlain: req.body['body-plain'],
+      timestamp: req.body['timestamp'],
+      token: req.body['token']
     };
 
     console.log('Extracted email data:', {
