@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import { initializeDatabase } from './db/init.js';
+import { initializeDatabase, checkDatabaseConnection } from './db/init.js';
 import { cleanupOldEmails } from './utils/cleanup.js';
 import authRoutes from './routes/auth.js';
 import emailRoutes from './routes/emails.js';
@@ -10,6 +10,15 @@ import webhookRoutes from './routes/webhook.js';
 import messageRoutes from './routes/messages.js';
 
 dotenv.config();
+
+// Validate required environment variables
+const requiredEnvVars = ['JWT_SECRET', 'DB_HOST', 'DB_USER', 'DB_PASSWORD', 'DB_NAME'];
+const missingEnvVars = requiredEnvVars.filter(envVar => !process.env[envVar]);
+
+if (missingEnvVars.length > 0) {
+  console.error('Missing required environment variables:', missingEnvVars.join(', '));
+  process.exit(1);
+}
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -35,8 +44,21 @@ app.use((req, res, next) => {
 });
 
 // Health check endpoint
-app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'healthy' });
+app.get('/health', async (req, res) => {
+  const dbHealthy = await checkDatabaseConnection();
+  if (dbHealthy) {
+    res.status(200).json({ 
+      status: 'healthy',
+      database: 'connected',
+      timestamp: new Date().toISOString()
+    });
+  } else {
+    res.status(503).json({ 
+      status: 'unhealthy',
+      database: 'disconnected',
+      timestamp: new Date().toISOString()
+    });
+  }
 });
 
 // Routes
@@ -70,13 +92,40 @@ function scheduleCleanup() {
 }
 
 // Initialize database and start server
+let server;
 initializeDatabase().then(() => {
-  app.listen(port, () => {
+  server = app.listen(port, () => {
     console.log(`Server running on port ${port}`);
     scheduleCleanup();
     console.log('Email cleanup scheduler started');
   });
+
+  // Graceful shutdown
+  process.on('SIGTERM', gracefulShutdown);
+  process.on('SIGINT', gracefulShutdown);
 }).catch(error => {
   console.error('Failed to initialize database:', error);
   process.exit(1);
 });
+
+// Graceful shutdown function
+async function gracefulShutdown() {
+  console.log('Received shutdown signal');
+  
+  // Stop accepting new requests
+  if (server) {
+    server.close(() => {
+      console.log('Server closed');
+    });
+  }
+
+  try {
+    // Close database connections
+    await pool.end();
+    console.log('Database connections closed');
+    process.exit(0);
+  } catch (error) {
+    console.error('Error during shutdown:', error);
+    process.exit(1);
+  }
+}
