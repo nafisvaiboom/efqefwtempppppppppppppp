@@ -55,11 +55,9 @@ export async function initializeDatabase() {
       await connection.query('SELECT 1');
       console.log('Database connection test successful');
       
-      // Set session variables for better performance
-      await connection.query(`
-        SET SESSION sql_mode = 'STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION';
-        SET SESSION time_zone = '+00:00';
-      `);
+      // Set session variables one at a time
+      await connection.query("SET SESSION sql_mode = 'STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'");
+      await connection.query("SET time_zone = '+00:00'");
       
       connection.release();
       return pool;
