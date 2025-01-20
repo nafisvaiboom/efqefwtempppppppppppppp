@@ -26,7 +26,7 @@ const port = process.env.PORT || 3000;
 // Configure CORS with more specific options for production
 const corsOptions = {
   origin: process.env.NODE_ENV === 'production'
-    ? process.env.CORS_ORIGINS?.split(',') || ['https://your-frontend-domain.com']
+    ? process.env.CORS_ORIGINS?.split(',') || ['https://boomlify.com']
     : '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization'],
