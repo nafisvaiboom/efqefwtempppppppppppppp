@@ -12,21 +12,33 @@ if (missingEnvVars.length > 0) {
   process.exit(1);
 }
 
+// Production-ready pool configuration
 const pool = mysql.createPool({
   host: process.env.DB_HOST,
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
+  
+  // Connection settings
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
   connectTimeout: 60000,
-  ssl: {
+  
+  // Production SSL settings
+  ssl: process.env.NODE_ENV === 'production' ? {
     rejectUnauthorized: false
-  },
-  // Add connection retry logic
+  } : undefined,
+  
+  // Connection resilience
   enableKeepAlive: true,
-  keepAliveInitialDelay: 0
+  keepAliveInitialDelay: 0,
+  
+  // Timezone handling
+  timezone: 'Z',
+  
+  // Debug in development only
+  debug: process.env.NODE_ENV !== 'production'
 });
 
 export async function initializeDatabase() {
@@ -43,6 +55,12 @@ export async function initializeDatabase() {
       await connection.query('SELECT 1');
       console.log('Database connection test successful');
       
+      // Set session variables for better performance
+      await connection.query(`
+        SET SESSION sql_mode = 'STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION';
+        SET SESSION time_zone = '+00:00';
+      `);
+      
       connection.release();
       return pool;
     } catch (error) {
@@ -58,7 +76,6 @@ export async function initializeDatabase() {
   }
 }
 
-// Add health check function
 export async function checkDatabaseConnection() {
   try {
     const connection = await pool.getConnection();
