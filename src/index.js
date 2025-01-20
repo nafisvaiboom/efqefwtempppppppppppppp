@@ -8,6 +8,7 @@ import emailRoutes from './routes/emails.js';
 import domainRoutes from './routes/domains.js';
 import webhookRoutes from './routes/webhook.js';
 import messageRoutes from './routes/messages.js';
+import helmet from 'helmet';
 
 dotenv.config();
 
@@ -23,15 +24,30 @@ if (missingEnvVars.length > 0) {
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Configure CORS with more specific options for production
+// Security middleware
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", "data:", "https:"],
+      connectSrc: ["'self'", "https://boomlify.com"],
+    },
+  },
+  crossOriginEmbedderPolicy: false,
+  crossOriginResourcePolicy: { policy: "cross-origin" }
+}));
+
+// CORS configuration for production
 const corsOptions = {
-  origin: process.env.NODE_ENV === 'production'
-    ? process.env.CORS_ORIGINS?.split(',') || ['https://boomlify.com']
+  origin: process.env.NODE_ENV === 'production' 
+    ? ['https://boomlify.com']
     : '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: false,
-  maxAge: 86400 // CORS preflight cache for 24 hours
+  maxAge: 86400
 };
 
 app.use(cors(corsOptions));
@@ -40,41 +56,18 @@ app.use(cors(corsOptions));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Security headers
+// Remove sensitive headers
 app.use((req, res, next) => {
-  // Security headers
+  res.removeHeader('X-Powered-By');
+  next();
+});
+
+// Add security headers
+app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('X-XSS-Protection', '1; mode=block');
   res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
-  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-  
-  // Remove sensitive headers
-  res.removeHeader('X-Powered-By');
-  
-  next();
-});
-
-// Basic rate limiting
-const rateLimit = {};
-app.use((req, res, next) => {
-  const ip = req.ip;
-  const now = Date.now();
-  
-  if (rateLimit[ip]) {
-    const timeDiff = now - rateLimit[ip].timestamp;
-    if (timeDiff < 1000) { // 1 second
-      rateLimit[ip].count++;
-      if (rateLimit[ip].count > 10) {
-        return res.status(429).json({ error: 'Too many requests' });
-      }
-    } else {
-      rateLimit[ip].count = 1;
-      rateLimit[ip].timestamp = now;
-    }
-  } else {
-    rateLimit[ip] = { count: 1, timestamp: now };
-  }
   next();
 });
 
@@ -85,14 +78,12 @@ app.get('/health', async (req, res) => {
     res.status(200).json({ 
       status: 'healthy',
       database: 'connected',
-      environment: process.env.NODE_ENV,
       timestamp: new Date().toISOString()
     });
   } else {
     res.status(503).json({ 
       status: 'unhealthy',
       database: 'disconnected',
-      environment: process.env.NODE_ENV,
       timestamp: new Date().toISOString()
     });
   }
@@ -108,20 +99,14 @@ app.use('/messages', messageRoutes);
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error('Global error handler:', err);
-  
-  // Don't expose error details in production
-  const errorMessage = process.env.NODE_ENV === 'production' 
-    ? 'Internal server error' 
-    : err.message;
-  
   res.status(500).json({ 
-    error: errorMessage,
-    requestId: req.id // Useful for log correlation
+    error: 'Internal server error',
+    message: process.env.NODE_ENV === 'development' ? err.message : undefined
   });
 });
 
 // Schedule cleanup to run every 24 hours
-const CLEANUP_INTERVAL = 24 * 60 * 60 * 1000;
+const CLEANUP_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
 
 function scheduleCleanup() {
   setInterval(async () => {
@@ -137,8 +122,8 @@ function scheduleCleanup() {
 // Initialize database and start server
 let server;
 initializeDatabase().then(() => {
-  server = app.listen(port, '0.0.0.0', () => {
-    console.log(`Server running on port ${port} in ${process.env.NODE_ENV} mode`);
+  server = app.listen(port, () => {
+    console.log(`Server running on port ${port}`);
     scheduleCleanup();
     console.log('Email cleanup scheduler started');
   });
@@ -170,3 +155,5 @@ async function gracefulShutdown() {
     process.exit(1);
   }
 }
+
+export default app;
