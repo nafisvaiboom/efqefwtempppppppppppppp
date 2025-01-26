@@ -4,26 +4,124 @@ import pool from '../db/init.js';
 
 const router = express.Router();
 
+// Helper function to parse email content
+function parseEmailContent(rawContent) {
+  try {
+    // Extract headers
+    const [headers, ...bodyParts] = rawContent.split('\n\n');
+    const headerLines = headers.split('\n');
+    
+    const parsedHeaders = {};
+    let currentHeader = '';
+    
+    headerLines.forEach(line => {
+      if (line.startsWith(' ') && currentHeader) {
+        // Continue previous header
+        parsedHeaders[currentHeader] += line.trim();
+      } else {
+        const match = line.match(/^([\w-]+):\s*(.*)$/);
+        if (match) {
+          currentHeader = match[1].toLowerCase();
+          parsedHeaders[currentHeader] = match[2];
+        }
+      }
+    });
+
+    // Find boundary if multipart
+    let boundary = '';
+    const contentType = parsedHeaders['content-type'] || '';
+    const boundaryMatch = contentType.match(/boundary="?([^";\s]+)"?/);
+    if (boundaryMatch) {
+      boundary = boundaryMatch[1];
+    }
+
+    // Parse body parts
+    const parts = [];
+    if (boundary) {
+      const bodyContent = bodyParts.join('\n\n');
+      const multipartSections = bodyContent.split('--' + boundary);
+      
+      multipartSections.forEach(section => {
+        if (section.trim() && !section.includes('--')) {
+          const [partHeaders, ...partContent] = section.trim().split('\n\n');
+          const contentTypeMatch = partHeaders.match(/Content-Type:\s*([^;\n]+)/i);
+          
+          if (contentTypeMatch) {
+            parts.push({
+              contentType: contentTypeMatch[1].trim(),
+              content: partContent.join('\n\n').trim()
+            });
+          }
+        }
+      });
+    } else {
+      // Single part email
+      parts.push({
+        contentType: parsedHeaders['content-type'] || 'text/plain',
+        content: bodyParts.join('\n\n')
+      });
+    }
+
+    return {
+      headers: parsedHeaders,
+      parts: parts
+    };
+  } catch (error) {
+    console.error('Error parsing email content:', error);
+    return {
+      headers: {},
+      parts: [{
+        contentType: 'text/plain',
+        content: rawContent
+      }]
+    };
+  }
+}
+
 router.post('/email/incoming', express.urlencoded({ extended: true }), async (req, res) => {
   console.log('Received webhook request');
   console.log('Content-Type:', req.headers['content-type']);
-  console.log('Request body:', req.body);
   
   try {
-    // Extract email data from the webhook request
+    const rawContent = req.body.body;
+    const parsedEmail = parseEmailContent(rawContent);
+    
+    // Extract email data
     const emailData = {
-      recipient: req.body['recipient'],
-      sender: req.body['sender'],
-      subject: req.body['subject'],
-      body: req.body['body'],
-      timestamp: new Date().toISOString()
+      recipient: req.body.recipient,
+      sender: req.body.sender,
+      subject: req.body.subject || parsedEmail.headers.subject || 'No Subject',
+      htmlContent: '',
+      textContent: '',
+      attachments: []
     };
+
+    // Process email parts
+    parsedEmail.parts.forEach(part => {
+      if (part.contentType.includes('text/html')) {
+        emailData.htmlContent = part.content;
+      } else if (part.contentType.includes('text/plain')) {
+        emailData.textContent = part.content;
+      } else if (part.contentType.includes('image/') || part.contentType.includes('application/')) {
+        emailData.attachments.push({
+          contentType: part.contentType,
+          content: part.content
+        });
+      }
+    });
+
+    // If no HTML content, use text content
+    if (!emailData.htmlContent && emailData.textContent) {
+      emailData.htmlContent = emailData.textContent.replace(/\n/g, '<br>');
+    }
 
     console.log('Extracted email data:', {
       recipient: emailData.recipient,
       sender: emailData.sender,
       subject: emailData.subject,
-      hasBody: !!emailData.body
+      hasHtmlContent: !!emailData.htmlContent,
+      hasTextContent: !!emailData.textContent,
+      attachmentCount: emailData.attachments.length
     });
 
     if (!emailData.recipient) {
@@ -31,7 +129,7 @@ router.post('/email/incoming', express.urlencoded({ extended: true }), async (re
       return res.status(400).json({ error: 'No recipient specified' });
     }
 
-    // Clean the recipient email address - this is the original recipient
+    // Clean the recipient email address
     const cleanRecipient = emailData.recipient.includes('<') ? 
       emailData.recipient.match(/<(.+)>/)[1] : 
       emailData.recipient.trim();
@@ -55,37 +153,64 @@ router.post('/email/incoming', express.urlencoded({ extended: true }), async (re
     const tempEmailId = tempEmails[0].id;
     const emailId = uuidv4();
 
-    console.log('Storing email:', {
-      id: emailId,
-      tempEmailId,
-      recipient: cleanRecipient
-    });
+    // Start a transaction
+    const connection = await pool.getConnection();
+    await connection.beginTransaction();
 
-    // Store the email in the database
-    await pool.query(`
-      INSERT INTO received_emails (
-        id, 
-        temp_email_id, 
-        from_email, 
-        subject, 
-        body, 
-        received_at
-      ) VALUES (?, ?, ?, ?, ?, NOW())
-    `, [
-      emailId,
-      tempEmailId,
-      emailData.sender,
-      emailData.subject,
-      emailData.body || 'No content'
-    ]);
+    try {
+      // Store the email
+      await connection.query(`
+        INSERT INTO received_emails (
+          id, 
+          temp_email_id, 
+          from_email, 
+          subject, 
+          body_html,
+          body_text,
+          received_at
+        ) VALUES (?, ?, ?, ?, ?, ?, NOW())
+      `, [
+        emailId,
+        tempEmailId,
+        emailData.sender,
+        emailData.subject,
+        emailData.htmlContent,
+        emailData.textContent
+      ]);
 
-    console.log('Email processed and stored successfully');
-    
-    res.status(200).json({
-      message: 'Email received and stored successfully',
-      emailId,
-      recipient: cleanRecipient
-    });
+      // Store attachments if any
+      for (const attachment of emailData.attachments) {
+        const attachmentId = uuidv4();
+        await connection.query(`
+          INSERT INTO email_attachments (
+            id,
+            email_id,
+            content_type,
+            content,
+            created_at
+          ) VALUES (?, ?, ?, ?, NOW())
+        `, [
+          attachmentId,
+          emailId,
+          attachment.contentType,
+          attachment.content
+        ]);
+      }
+
+      await connection.commit();
+      console.log('Email and attachments stored successfully');
+
+      res.status(200).json({
+        message: 'Email received and stored successfully',
+        emailId,
+        recipient: cleanRecipient
+      });
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
   } catch (error) {
     console.error('Webhook processing error:', error);
     console.error('Error stack:', error.stack);
