@@ -13,7 +13,7 @@ if (missingEnvVars.length > 0) {
 }
 
 // Production-ready pool configuration
-const pool = mysql.createPool({
+export const pool = mysql.createPool({
   host: process.env.DB_HOST,
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
@@ -41,8 +41,8 @@ const pool = mysql.createPool({
   debug: process.env.NODE_ENV !== 'production',
 
   // Pool specific settings
-  maxIdle: 10, // max idle connections, equal to connectionLimit
-  idleTimeout: 60000, // 60 seconds
+  maxIdle: 10,
+  idleTimeout: 60000,
 });
 
 // Only log pool events in development
@@ -70,6 +70,7 @@ pool.on('error', function (err) {
   process.exit(-1);
 });
 
+// Initialize database with retry logic
 export async function initializeDatabase() {
   let retries = 5;
   while (retries > 0) {
@@ -81,7 +82,7 @@ export async function initializeDatabase() {
       // Test the connection
       await connection.query('SELECT 1');
       
-      // Set session variables - Execute separately to avoid syntax errors
+      // Set session variables
       await connection.query("SET SESSION sql_mode = 'STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'");
       await connection.query("SET time_zone = '+00:00'");
       
@@ -103,6 +104,7 @@ export async function initializeDatabase() {
   }
 }
 
+// Initialize database tables
 async function initializeTables(connection) {
   // Users table
   await connection.query(`
@@ -174,6 +176,7 @@ async function initializeTables(connection) {
   `);
 }
 
+// Check database connection health
 export async function checkDatabaseConnection() {
   try {
     const connection = await pool.getConnection();
@@ -185,5 +188,3 @@ export async function checkDatabaseConnection() {
     return false;
   }
 }
-
-export default pool;
