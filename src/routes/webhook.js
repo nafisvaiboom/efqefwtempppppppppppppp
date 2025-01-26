@@ -1,225 +1,189 @@
-import express from 'express';
-import { v4 as uuidv4 } from 'uuid';
-import pool from '../db/init.js';
+import mysql from 'mysql2/promise';
+import dotenv from 'dotenv';
 
-const router = express.Router();
+dotenv.config();
 
-// Helper function to parse email content
-function parseEmailContent(rawContent) {
-  try {
-    // Extract headers
-    const [headers, ...bodyParts] = rawContent.split('\n\n');
-    const headerLines = headers.split('\n');
-    
-    const parsedHeaders = {};
-    let currentHeader = '';
-    
-    headerLines.forEach(line => {
-      if (line.startsWith(' ') && currentHeader) {
-        // Continue previous header
-        parsedHeaders[currentHeader] += line.trim();
-      } else {
-        const match = line.match(/^([\w-]+):\s*(.*)$/);
-        if (match) {
-          currentHeader = match[1].toLowerCase();
-          parsedHeaders[currentHeader] = match[2];
-        }
-      }
-    });
+// Validate required environment variables
+const requiredEnvVars = ['DB_HOST', 'DB_USER', 'DB_PASSWORD', 'DB_NAME'];
+const missingEnvVars = requiredEnvVars.filter(envVar => !process.env[envVar]);
 
-    // Find boundary if multipart
-    let boundary = '';
-    const contentType = parsedHeaders['content-type'] || '';
-    const boundaryMatch = contentType.match(/boundary="?([^";\s]+)"?/);
-    if (boundaryMatch) {
-      boundary = boundaryMatch[1];
-    }
+if (missingEnvVars.length > 0) {
+  console.error('Missing required environment variables:', missingEnvVars.join(', '));
+  process.exit(1);
+}
 
-    // Parse body parts
-    const parts = [];
-    if (boundary) {
-      const bodyContent = bodyParts.join('\n\n');
-      const multipartSections = bodyContent.split('--' + boundary);
+// Production-ready pool configuration
+const pool = mysql.createPool({
+  host: process.env.DB_HOST,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME,
+  
+  // Connection settings
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0,
+  connectTimeout: 60000,
+  
+  // Production SSL settings
+  ssl: process.env.NODE_ENV === 'production' ? {
+    rejectUnauthorized: false
+  } : undefined,
+  
+  // Connection resilience
+  enableKeepAlive: true,
+  keepAliveInitialDelay: 0,
+  
+  // Timezone handling
+  timezone: 'Z',
+  
+  // Debug in development only
+  debug: process.env.NODE_ENV !== 'production',
+
+  // Pool specific settings
+  maxIdle: 10, // max idle connections, equal to connectionLimit
+  idleTimeout: 60000, // 60 seconds
+});
+
+// Only log pool events in development
+if (process.env.NODE_ENV !== 'production') {
+  pool.on('acquire', function (connection) {
+    console.log('Connection %d acquired', connection.threadId);
+  });
+
+  pool.on('connection', function (connection) {
+    console.log('New connection %d created', connection.threadId);
+  });
+
+  pool.on('enqueue', function () {
+    console.warn('Waiting for available connection slot');
+  });
+
+  pool.on('release', function (connection) {
+    console.log('Connection %d released', connection.threadId);
+  });
+}
+
+// Add error handler for the pool
+pool.on('error', function (err) {
+  console.error('Unexpected error on idle client', err);
+  process.exit(-1);
+});
+
+export async function initializeDatabase() {
+  let retries = 5;
+  while (retries > 0) {
+    try {
+      console.log('Attempting to connect to database...');
       
-      multipartSections.forEach(section => {
-        if (section.trim() && !section.includes('--')) {
-          const [partHeaders, ...partContent] = section.trim().split('\n\n');
-          const contentTypeMatch = partHeaders.match(/Content-Type:\s*([^;\n]+)/i);
-          
-          if (contentTypeMatch) {
-            parts.push({
-              contentType: contentTypeMatch[1].trim(),
-              content: partContent.join('\n\n').trim()
-            });
-          }
-        }
-      });
-    } else {
-      // Single part email
-      parts.push({
-        contentType: parsedHeaders['content-type'] || 'text/plain',
-        content: bodyParts.join('\n\n')
-      });
-    }
+      const connection = await pool.getConnection();
+      
+      // Test the connection
+      await connection.query('SELECT 1');
+      
+      // Set session variables - Execute separately to avoid syntax errors
+      await connection.query("SET SESSION sql_mode = 'STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'");
+      await connection.query("SET time_zone = '+00:00'");
+      
+      // Initialize tables
+      await initializeTables(connection);
 
-    return {
-      headers: parsedHeaders,
-      parts: parts
-    };
-  } catch (error) {
-    console.error('Error parsing email content:', error);
-    return {
-      headers: {},
-      parts: [{
-        contentType: 'text/plain',
-        content: rawContent
-      }]
-    };
+      connection.release();
+      console.log('Database initialized successfully');
+      return pool;
+    } catch (error) {
+      console.error(`Database connection attempt failed (${retries} retries left):`, error);
+      retries--;
+      if (retries === 0) {
+        console.error('All database connection attempts failed');
+        throw error;
+      }
+      await new Promise(resolve => setTimeout(resolve, 5000));
+    }
   }
 }
 
-router.post('/email/incoming', express.urlencoded({ extended: true }), async (req, res) => {
-  console.log('Received webhook request');
-  console.log('Content-Type:', req.headers['content-type']);
-  
-  try {
-    const rawContent = req.body.body;
-    const parsedEmail = parseEmailContent(rawContent);
-    
-    // Extract email data
-    const emailData = {
-      recipient: req.body.recipient,
-      sender: req.body.sender,
-      subject: req.body.subject || parsedEmail.headers.subject || 'No Subject',
-      htmlContent: '',
-      textContent: '',
-      attachments: []
-    };
-
-    // Process email parts
-    parsedEmail.parts.forEach(part => {
-      if (part.contentType.includes('text/html')) {
-        emailData.htmlContent = part.content;
-      } else if (part.contentType.includes('text/plain')) {
-        emailData.textContent = part.content;
-      } else if (part.contentType.includes('image/') || part.contentType.includes('application/')) {
-        emailData.attachments.push({
-          contentType: part.contentType,
-          content: part.content
-        });
-      }
-    });
-
-    // If no HTML content, use text content
-    if (!emailData.htmlContent && emailData.textContent) {
-      emailData.htmlContent = emailData.textContent.replace(/\n/g, '<br>');
-    }
-
-    console.log('Extracted email data:', {
-      recipient: emailData.recipient,
-      sender: emailData.sender,
-      subject: emailData.subject,
-      hasHtmlContent: !!emailData.htmlContent,
-      hasTextContent: !!emailData.textContent,
-      attachmentCount: emailData.attachments.length
-    });
-
-    if (!emailData.recipient) {
-      console.error('No recipient specified in the webhook data');
-      return res.status(400).json({ error: 'No recipient specified' });
-    }
-
-    // Clean the recipient email address
-    const cleanRecipient = emailData.recipient.includes('<') ? 
-      emailData.recipient.match(/<(.+)>/)[1] : 
-      emailData.recipient.trim();
-
-    console.log('Cleaned recipient:', cleanRecipient);
-
-    // Find the temporary email in the database
-    const [tempEmails] = await pool.query(
-      'SELECT id FROM temp_emails WHERE email = ? AND expires_at > NOW()',
-      [cleanRecipient]
+async function initializeTables(connection) {
+  // Users table
+  await connection.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id VARCHAR(36) PRIMARY KEY,
+      email VARCHAR(255) UNIQUE NOT NULL,
+      password VARCHAR(255) NOT NULL,
+      google_id VARCHAR(255) UNIQUE,
+      is_admin BOOLEAN DEFAULT FALSE,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      last_login TIMESTAMP
     );
+  `);
 
-    if (tempEmails.length === 0) {
-      console.error('No active temporary email found for recipient:', cleanRecipient);
-      return res.status(404).json({ 
-        error: 'Recipient not found',
-        message: 'No active temporary email found for the specified recipient'
-      });
-    }
+  // Domains table
+  await connection.query(`
+    CREATE TABLE IF NOT EXISTS domains (
+      id VARCHAR(36) PRIMARY KEY,
+      domain VARCHAR(255) UNIQUE NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
 
-    const tempEmailId = tempEmails[0].id;
-    const emailId = uuidv4();
+  // Temporary emails table
+  await connection.query(`
+    CREATE TABLE IF NOT EXISTS temp_emails (
+      id VARCHAR(36) PRIMARY KEY,
+      user_id VARCHAR(36) NOT NULL,
+      email VARCHAR(255) UNIQUE NOT NULL,
+      domain_id VARCHAR(36) NOT NULL,
+      expires_at TIMESTAMP NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE
+    );
+  `);
 
-    // Start a transaction
+  // Received emails table
+  await connection.query(`
+    CREATE TABLE IF NOT EXISTS received_emails (
+      id VARCHAR(36) PRIMARY KEY,
+      temp_email_id VARCHAR(36) NOT NULL,
+      from_email VARCHAR(255) NOT NULL,
+      subject TEXT,
+      body_html LONGTEXT,
+      body_text LONGTEXT,
+      received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      is_read BOOLEAN DEFAULT FALSE,
+      is_starred BOOLEAN DEFAULT FALSE,
+      is_archived BOOLEAN DEFAULT FALSE,
+      is_spam BOOLEAN DEFAULT FALSE,
+      FOREIGN KEY (temp_email_id) REFERENCES temp_emails(id) ON DELETE CASCADE
+    );
+  `);
+
+  // Email attachments table
+  await connection.query(`
+    CREATE TABLE IF NOT EXISTS email_attachments (
+      id VARCHAR(36) PRIMARY KEY,
+      email_id VARCHAR(36) NOT NULL,
+      filename VARCHAR(255),
+      content_type VARCHAR(100),
+      content LONGTEXT,
+      size BIGINT,
+      is_inline BOOLEAN DEFAULT FALSE,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (email_id) REFERENCES received_emails(id) ON DELETE CASCADE
+    );
+  `);
+}
+
+export async function checkDatabaseConnection() {
+  try {
     const connection = await pool.getConnection();
-    await connection.beginTransaction();
-
-    try {
-      // Store the email
-      await connection.query(`
-        INSERT INTO received_emails (
-          id, 
-          temp_email_id, 
-          from_email, 
-          subject, 
-          body_html,
-          body_text,
-          received_at
-        ) VALUES (?, ?, ?, ?, ?, ?, NOW())
-      `, [
-        emailId,
-        tempEmailId,
-        emailData.sender,
-        emailData.subject,
-        emailData.htmlContent,
-        emailData.textContent
-      ]);
-
-      // Store attachments if any
-      for (const attachment of emailData.attachments) {
-        const attachmentId = uuidv4();
-        await connection.query(`
-          INSERT INTO email_attachments (
-            id,
-            email_id,
-            content_type,
-            content,
-            created_at
-          ) VALUES (?, ?, ?, ?, NOW())
-        `, [
-          attachmentId,
-          emailId,
-          attachment.contentType,
-          attachment.content
-        ]);
-      }
-
-      await connection.commit();
-      console.log('Email and attachments stored successfully');
-
-      res.status(200).json({
-        message: 'Email received and stored successfully',
-        emailId,
-        recipient: cleanRecipient
-      });
-    } catch (error) {
-      await connection.rollback();
-      throw error;
-    } finally {
-      connection.release();
-    }
+    await connection.query('SELECT 1');
+    connection.release();
+    return true;
   } catch (error) {
-    console.error('Webhook processing error:', error);
-    console.error('Error stack:', error.stack);
-    
-    res.status(500).json({
-      error: 'Internal server error',
-      message: 'Failed to process the incoming email'
-    });
+    console.error('Database health check failed:', error);
+    return false;
   }
-});
+}
 
-export default router;
+export default pool;
