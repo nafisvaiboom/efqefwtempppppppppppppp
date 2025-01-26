@@ -41,6 +41,23 @@ const pool = mysql.createPool({
   debug: process.env.NODE_ENV !== 'production'
 });
 
+// Event listeners for connection pool
+pool.on('acquire', function (connection) {
+  console.log('Connection %d acquired', connection.threadId);
+});
+
+pool.on('connection', function (connection) {
+  console.log('New connection %d created', connection.threadId);
+});
+
+pool.on('enqueue', function () {
+  console.warn('Waiting for available connection slot');
+});
+
+pool.on('release', function (connection) {
+  console.log('Connection %d released', connection.threadId);
+});
+
 export async function initializeDatabase() {
   let retries = 5;
   while (retries > 0) {
@@ -59,7 +76,28 @@ export async function initializeDatabase() {
       await connection.query("SET SESSION sql_mode = 'STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'");
       await connection.query("SET time_zone = '+00:00'");
       
+      // Update received_emails table to handle HTML and text content separately
+      await connection.query(`
+        ALTER TABLE received_emails 
+        ADD COLUMN IF NOT EXISTS body_html LONGTEXT,
+        ADD COLUMN IF NOT EXISTS body_text LONGTEXT,
+        ADD COLUMN IF NOT EXISTS is_read BOOLEAN DEFAULT FALSE,
+        ADD COLUMN IF NOT EXISTS is_starred BOOLEAN DEFAULT FALSE,
+        ADD COLUMN IF NOT EXISTS is_archived BOOLEAN DEFAULT FALSE,
+        ADD COLUMN IF NOT EXISTS is_spam BOOLEAN DEFAULT FALSE;
+      `);
+
+      // Update email_attachments table
+      await connection.query(`
+        ALTER TABLE email_attachments 
+        ADD COLUMN IF NOT EXISTS content LONGTEXT,
+        ADD COLUMN IF NOT EXISTS size BIGINT,
+        ADD COLUMN IF NOT EXISTS filename VARCHAR(255),
+        ADD COLUMN IF NOT EXISTS is_inline BOOLEAN DEFAULT FALSE;
+      `);
+
       connection.release();
+      console.log('Database schema updated successfully');
       return pool;
     } catch (error) {
       console.error(`Database connection attempt failed (${retries} retries left):`, error);
