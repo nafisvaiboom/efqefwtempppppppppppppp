@@ -43,8 +43,6 @@ const pool = mysql.createPool({
   // Pool specific settings
   maxIdle: 10, // max idle connections, equal to connectionLimit
   idleTimeout: 60000, // 60 seconds
-  enableKeepAlive: true,
-  keepAliveInitialDelay: 0
 });
 
 // Only log pool events in development
@@ -83,11 +81,9 @@ export async function initializeDatabase() {
       // Test the connection
       await connection.query('SELECT 1');
       
-      // Set session variables
-      await connection.query(`
-        SET SESSION sql_mode = 'STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION';
-        SET time_zone = '+00:00';
-      `);
+      // Set session variables - Execute separately to avoid syntax errors
+      await connection.query("SET SESSION sql_mode = 'STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'");
+      await connection.query("SET time_zone = '+00:00'");
       
       // Initialize tables
       await initializeTables(connection);
@@ -108,24 +104,73 @@ export async function initializeDatabase() {
 }
 
 async function initializeTables(connection) {
-  // Update received_emails table
+  // Users table
   await connection.query(`
-    ALTER TABLE received_emails 
-    ADD COLUMN IF NOT EXISTS body_html LONGTEXT,
-    ADD COLUMN IF NOT EXISTS body_text LONGTEXT,
-    ADD COLUMN IF NOT EXISTS is_read BOOLEAN DEFAULT FALSE,
-    ADD COLUMN IF NOT EXISTS is_starred BOOLEAN DEFAULT FALSE,
-    ADD COLUMN IF NOT EXISTS is_archived BOOLEAN DEFAULT FALSE,
-    ADD COLUMN IF NOT EXISTS is_spam BOOLEAN DEFAULT FALSE;
+    CREATE TABLE IF NOT EXISTS users (
+      id VARCHAR(36) PRIMARY KEY,
+      email VARCHAR(255) UNIQUE NOT NULL,
+      password VARCHAR(255) NOT NULL,
+      google_id VARCHAR(255) UNIQUE,
+      is_admin BOOLEAN DEFAULT FALSE,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      last_login TIMESTAMP
+    );
   `);
 
-  // Update email_attachments table
+  // Domains table
   await connection.query(`
-    ALTER TABLE email_attachments 
-    ADD COLUMN IF NOT EXISTS content LONGTEXT,
-    ADD COLUMN IF NOT EXISTS size BIGINT,
-    ADD COLUMN IF NOT EXISTS filename VARCHAR(255),
-    ADD COLUMN IF NOT EXISTS is_inline BOOLEAN DEFAULT FALSE;
+    CREATE TABLE IF NOT EXISTS domains (
+      id VARCHAR(36) PRIMARY KEY,
+      domain VARCHAR(255) UNIQUE NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  // Temporary emails table
+  await connection.query(`
+    CREATE TABLE IF NOT EXISTS temp_emails (
+      id VARCHAR(36) PRIMARY KEY,
+      user_id VARCHAR(36) NOT NULL,
+      email VARCHAR(255) UNIQUE NOT NULL,
+      domain_id VARCHAR(36) NOT NULL,
+      expires_at TIMESTAMP NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE
+    );
+  `);
+
+  // Received emails table
+  await connection.query(`
+    CREATE TABLE IF NOT EXISTS received_emails (
+      id VARCHAR(36) PRIMARY KEY,
+      temp_email_id VARCHAR(36) NOT NULL,
+      from_email VARCHAR(255) NOT NULL,
+      subject TEXT,
+      body_html LONGTEXT,
+      body_text LONGTEXT,
+      received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      is_read BOOLEAN DEFAULT FALSE,
+      is_starred BOOLEAN DEFAULT FALSE,
+      is_archived BOOLEAN DEFAULT FALSE,
+      is_spam BOOLEAN DEFAULT FALSE,
+      FOREIGN KEY (temp_email_id) REFERENCES temp_emails(id) ON DELETE CASCADE
+    );
+  `);
+
+  // Email attachments table
+  await connection.query(`
+    CREATE TABLE IF NOT EXISTS email_attachments (
+      id VARCHAR(36) PRIMARY KEY,
+      email_id VARCHAR(36) NOT NULL,
+      filename VARCHAR(255),
+      content_type VARCHAR(100),
+      content LONGTEXT,
+      size BIGINT,
+      is_inline BOOLEAN DEFAULT FALSE,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (email_id) REFERENCES received_emails(id) ON DELETE CASCADE
+    );
   `);
 }
 
