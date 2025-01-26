@@ -4,8 +4,18 @@ import jwt from 'jsonwebtoken';
 import { v4 as uuidv4 } from 'uuid';
 import axios from 'axios';
 import pool from '../db/init.js';
+import { authenticateToken } from '../middleware/auth.js';
 
 const router = express.Router();
+
+// Utility function to generate JWT token
+const generateToken = (user) => {
+  return jwt.sign(
+    { id: user.id, email: user.email, isAdmin: user.is_admin },
+    process.env.JWT_SECRET,
+    { expiresIn: '7d' }
+  );
+};
 
 // Register new user
 router.post('/register', async (req, res) => {
@@ -16,7 +26,6 @@ router.post('/register', async (req, res) => {
       return res.status(400).json({ error: 'Email and password are required' });
     }
 
-    // Check if user already exists
     const [existingUsers] = await pool.query(
       'SELECT * FROM users WHERE email = ?',
       [email]
@@ -34,20 +43,11 @@ router.post('/register', async (req, res) => {
       [id, email, hashedPassword]
     );
 
-    const token = jwt.sign(
-      { id, email, isAdmin: false },
-      process.env.JWT_SECRET,
-      { expiresIn: '7d' }
-    );
+    const token = generateToken({ id, email, is_admin: false });
 
-    res.json({ 
-      token, 
-      user: { 
-        id, 
-        email, 
-        isAdmin: false,
-        lastLogin: new Date()
-      } 
+    res.json({
+      token,
+      user: { id, email, isAdmin: false, lastLogin: new Date() }
     });
   } catch (error) {
     console.error('Registration failed:', error);
@@ -68,7 +68,7 @@ router.post('/login', async (req, res) => {
       'SELECT * FROM users WHERE email = ?',
       [email]
     );
-    
+
     if (users.length === 0) {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
@@ -80,17 +80,12 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
-    // Update last login time
     await pool.query(
       'UPDATE users SET last_login = NOW() WHERE id = ?',
       [user.id]
     );
 
-    const token = jwt.sign(
-      { id: user.id, email: user.email, isAdmin: user.is_admin },
-      process.env.JWT_SECRET,
-      { expiresIn: '7d' }
-    );
+    const token = generateToken(user);
 
     res.json({
       token,
@@ -116,7 +111,6 @@ router.post('/google', async (req, res) => {
       return res.status(400).json({ error: 'Access token is required' });
     }
 
-    // Verify the token with Google
     const response = await axios.get(
       'https://www.googleapis.com/oauth2/v3/userinfo',
       {
@@ -126,7 +120,6 @@ router.post('/google', async (req, res) => {
 
     const { email, sub: googleId } = response.data;
 
-    // Check if user exists
     let [users] = await pool.query(
       'SELECT * FROM users WHERE email = ? OR google_id = ?',
       [email, googleId]
@@ -134,31 +127,24 @@ router.post('/google', async (req, res) => {
 
     let user;
     if (users.length === 0) {
-      // Create new user
       const id = uuidv4();
-      const hashedPassword = await bcrypt.hash(googleId, 10); // Use Google ID as password
+      const hashedPassword = await bcrypt.hash(googleId, 10);
 
       await pool.query(
         'INSERT INTO users (id, email, password, google_id, last_login) VALUES (?, ?, ?, ?, NOW())',
         [id, email, hashedPassword, googleId]
       );
 
-      user = { id, email, isAdmin: false };
+      user = { id, email, is_admin: false };
     } else {
       user = users[0];
-      
-      // Update last login time and Google ID if not set
       await pool.query(
         'UPDATE users SET last_login = NOW(), google_id = COALESCE(google_id, ?) WHERE id = ?',
         [googleId, user.id]
       );
     }
 
-    const token = jwt.sign(
-      { id: user.id, email: user.email, isAdmin: user.is_admin },
-      process.env.JWT_SECRET,
-      { expiresIn: '7d' }
-    );
+    const token = generateToken(user);
 
     res.json({
       token,
@@ -177,31 +163,10 @@ router.post('/google', async (req, res) => {
 });
 
 // Refresh token
-router.post('/refresh-token', async (req, res) => {
+router.post('/refresh-token', authenticateToken, async (req, res) => {
   try {
-    const token = req.headers.authorization?.split(' ')[1];
-    
-    if (!token) {
-      return res.status(401).json({ error: 'No token provided' });
-    }
-
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const [users] = await pool.query(
-      'SELECT * FROM users WHERE id = ?',
-      [decoded.id]
-    );
-
-    if (users.length === 0) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    const user = users[0];
-    const newToken = jwt.sign(
-      { id: user.id, email: user.email, isAdmin: user.is_admin },
-      process.env.JWT_SECRET,
-      { expiresIn: '7d' }
-    );
-
+    const user = req.user;
+    const newToken = generateToken(user);
     res.json({ token: newToken });
   } catch (error) {
     console.error('Token refresh failed:', error);
