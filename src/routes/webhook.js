@@ -14,8 +14,7 @@ router.post('/email/incoming', express.urlencoded({ extended: true }), async (re
       recipient: req.body['recipient'] || req.body['to'],
       sender: req.body['sender'] || req.body['from'],
       subject: req.body['subject'],
-      bodyHtml: req.body['body-html'] || req.body['html'] || req.body['body'],
-      bodyPlain: req.body['body-plain'] || req.body['text'],
+      body: req.body['body'] || req.body['body-html'] || req.body['html'] || req.body['body-plain'] || req.body['text'],
       timestamp: new Date().toISOString()
     };
 
@@ -23,8 +22,7 @@ router.post('/email/incoming', express.urlencoded({ extended: true }), async (re
       recipient: emailData.recipient,
       sender: emailData.sender,
       subject: emailData.subject,
-      hasHtmlBody: !!emailData.bodyHtml,
-      hasPlainBody: !!emailData.bodyPlain
+      hasBody: !!emailData.body
     });
 
     if (!emailData.recipient) {
@@ -77,45 +75,8 @@ router.post('/email/incoming', express.urlencoded({ extended: true }), async (re
       tempEmailId,
       emailData.sender,
       emailData.subject,
-      emailData.bodyHtml || emailData.bodyPlain || 'No content'
+      emailData.body || 'No content'
     ]);
-
-    // Handle attachments if present
-    if (req.body['attachments']) {
-      try {
-        const attachments = JSON.parse(req.body['attachments']);
-        
-        for (const attachment of Object.values(attachments)) {
-          const attachmentId = uuidv4();
-          
-          await pool.query(`
-            INSERT INTO email_attachments (
-              id,
-              email_id,
-              filename,
-              content_type,
-              size,
-              url
-            ) VALUES (?, ?, ?, ?, ?, ?)
-          `, [
-            attachmentId,
-            emailId,
-            attachment.name,
-            attachment['content-type'],
-            attachment.size,
-            attachment.url
-          ]);
-
-          console.log('Stored attachment:', {
-            id: attachmentId,
-            filename: attachment.name,
-            size: attachment.size
-          });
-        }
-      } catch (error) {
-        console.error('Failed to process attachments:', error);
-      }
-    }
 
     console.log('Email processed and stored successfully');
     
