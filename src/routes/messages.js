@@ -1,7 +1,7 @@
 import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { authenticateToken, requireAdmin } from '../middleware/auth.js';
-import pool from '../db/init.js';
+import { pool } from '../db/init.js';  // Updated import statement
 
 const router = express.Router();
 
@@ -48,6 +48,11 @@ router.post('/', authenticateToken, requireAdmin, async (req, res) => {
     res.status(500).json({ error: 'Failed to create message' });
   }
 });
+
+// Rest of the routes...
+
+export default router;
+
 
 // Dismiss a message for the current user
 router.post('/:id/dismiss', authenticateToken, async (req, res) => {
