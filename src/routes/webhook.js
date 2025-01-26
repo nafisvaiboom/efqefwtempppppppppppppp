@@ -7,14 +7,15 @@ const router = express.Router();
 router.post('/email/incoming', express.urlencoded({ extended: true }), async (req, res) => {
   console.log('Received webhook request');
   console.log('Content-Type:', req.headers['content-type']);
+  console.log('Request body:', req.body);
   
   try {
     // Extract email data from the webhook request
     const emailData = {
-      recipient: req.body['recipient'] || req.body['to'],
-      sender: req.body['sender'] || req.body['from'],
+      recipient: req.body['recipient'],
+      sender: req.body['sender'],
       subject: req.body['subject'],
-      body: req.body['body'] || req.body['body-html'] || req.body['html'] || req.body['body-plain'] || req.body['text'],
+      body: req.body['body'],
       timestamp: new Date().toISOString()
     };
 
@@ -30,7 +31,7 @@ router.post('/email/incoming', express.urlencoded({ extended: true }), async (re
       return res.status(400).json({ error: 'No recipient specified' });
     }
 
-    // Clean the recipient email address
+    // Clean the recipient email address - this is the original recipient
     const cleanRecipient = emailData.recipient.includes('<') ? 
       emailData.recipient.match(/<(.+)>/)[1] : 
       emailData.recipient.trim();
