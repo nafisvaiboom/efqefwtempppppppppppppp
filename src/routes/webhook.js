@@ -1,87 +1,64 @@
 import express from 'express';
-import { pool } from '../db/init.js'; // Assuming you're using a connection pool
+import { v4 as uuidv4 } from 'uuid';
+import { pool } from '../db/init.js';
 
 const router = express.Router();
 
-/**
- * Parses raw email content into headers, body, and attachments.
- * @param {string} rawContent - The raw email content.
- * @returns {Object} - Parsed email with headers, parts, and attachments.
- */
+// Helper function to parse email content
 function parseEmailContent(rawContent) {
   try {
-    // Split headers and body more reliably
-    const headerBodySplit = rawContent.split(/\r?\n\r?\n/);
-    const headers = headerBodySplit[0];
-    const body = headerBodySplit.slice(1).join('\n\n');
-
-    // Parse headers more accurately
-    const headerLines = headers.split(/\r?\n/);
+    // Extract headers
+    const [headers, ...bodyParts] = rawContent.split('\n\n');
+    const headerLines = headers.split('\n');
+    
     const parsedHeaders = {};
     let currentHeader = '';
-
+    
     headerLines.forEach(line => {
-      if (line.match(/^\s+/) && currentHeader) {
+      if (line.startsWith(' ') && currentHeader) {
         // Continue previous header
-        parsedHeaders[currentHeader] += ' ' + line.trim();
+        parsedHeaders[currentHeader] += line.trim();
       } else {
-        const match = line.match(/^([\w-]+):\s*(.*)$/i);
+        const match = line.match(/^([\w-]+):\s*(.*)$/);
         if (match) {
           currentHeader = match[1].toLowerCase();
-          parsedHeaders[currentHeader] = match[2].trim();
+          parsedHeaders[currentHeader] = match[2];
         }
       }
     });
 
-    // Handle multipart content
+    // Find boundary if multipart
+    let boundary = '';
     const contentType = parsedHeaders['content-type'] || '';
-    const boundaryMatch = contentType.match(/boundary="?([^";\s]+)"?/i);
-    const parts = [];
-
+    const boundaryMatch = contentType.match(/boundary="?([^";\s]+)"?/);
     if (boundaryMatch) {
-      const boundary = boundaryMatch[1];
-      const multipartSections = body.split(new RegExp(`--${boundary}(?:--)?[\r\n]*`));
+      boundary = boundaryMatch[1];
+    }
 
+    // Parse body parts
+    const parts = [];
+    if (boundary) {
+      const bodyContent = bodyParts.join('\n\n');
+      const multipartSections = bodyContent.split('--' + boundary);
+      
       multipartSections.forEach(section => {
-        if (section.trim()) {
-          const [partHeaders, ...partContent] = section.trim().split(/\r?\n\r?\n/);
-          const contentTypeMatch = partHeaders.match(/Content-Type:\s*([^;\r\n]+)/i);
-          const contentEncodingMatch = partHeaders.match(/Content-Transfer-Encoding:\s*([^\r\n]+)/i);
-          const filenameMatch = partHeaders.match(/filename="?([^"]+)"?/i);
-
+        if (section.trim() && !section.includes('--')) {
+          const [partHeaders, ...partContent] = section.trim().split('\n\n');
+          const contentTypeMatch = partHeaders.match(/Content-Type:\s*([^;\n]+)/i);
+          
           if (contentTypeMatch) {
-            let content = partContent.join('\n\n');
-
-            // Handle different content encodings
-            if (contentEncodingMatch) {
-              const encoding = contentEncodingMatch[1].toLowerCase();
-              if (encoding === 'base64') {
-                try {
-                  content = Buffer.from(content, 'base64').toString('utf8');
-                } catch (e) {
-                  console.error('Failed to decode base64 content:', e);
-                }
-              } else if (encoding === 'quoted-printable') {
-                content = content.replace(/=\r?\n/g, '')
-                  .replace(/=([\da-fA-F]{2})/g, (_, hex) =>
-                    String.fromCharCode(parseInt(hex, 16)));
-              }
-            }
-
             parts.push({
               contentType: contentTypeMatch[1].trim(),
-              content: content.trim(),
-              filename: filenameMatch ? filenameMatch[1] : null
+              content: partContent.join('\n\n').trim()
             });
           }
         }
       });
     } else {
-      // Handle non-multipart emails
+      // Single part email
       parts.push({
-        contentType: contentType.split(';')[0] || 'text/plain',
-        content: body.trim(),
-        filename: null
+        contentType: parsedHeaders['content-type'] || 'text/plain',
+        content: bodyParts.join('\n\n')
       });
     }
 
@@ -95,21 +72,22 @@ function parseEmailContent(rawContent) {
       headers: {},
       parts: [{
         contentType: 'text/plain',
-        content: rawContent,
-        filename: null
+        content: rawContent
       }]
     };
   }
 }
 
-/**
- * Webhook route to handle incoming emails.
- */
+// Webhook route for incoming emails
 router.post('/email/incoming', express.urlencoded({ extended: true }), async (req, res) => {
+  console.log('Received webhook request');
+  console.log('Content-Type:', req.headers['content-type']);
+  
   try {
     const rawContent = req.body.body;
     const parsedEmail = parseEmailContent(rawContent);
-
+    
+    // Extract email data
     const emailData = {
       recipient: req.body.recipient,
       sender: req.body.sender,
@@ -119,82 +97,125 @@ router.post('/email/incoming', express.urlencoded({ extended: true }), async (re
       attachments: []
     };
 
-    // Process email parts with better content handling
+    // Process email parts
     parsedEmail.parts.forEach(part => {
-      const contentType = part.contentType.toLowerCase();
-
-      if (contentType.includes('text/html')) {
-        // Sanitize HTML content
-        emailData.htmlContent = part.content
-          .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-          .replace(/<iframe\b[^<]*(?:(?!<\/iframe>)<[^<]*)*<\/iframe>/gi, '');
-      } else if (contentType.includes('text/plain')) {
-        // Preserve text formatting
-        emailData.textContent = part.content
-          .replace(/\n/g, '<br>')
-          .replace(/\s{2,}/g, ' &nbsp;');
-      } else if (contentType.includes('image/') || contentType.includes('application/')) {
-        // Handle attachments
+      if (part.contentType.includes('text/html')) {
+        emailData.htmlContent = part.content;
+      } else if (part.contentType.includes('text/plain')) {
+        emailData.textContent = part.content;
+      } else if (part.contentType.includes('image/') || part.contentType.includes('application/')) {
         emailData.attachments.push({
-          contentType: contentType,
-          content: part.content,
-          filename: part.filename || `attachment-${Date.now()}`
+          contentType: part.contentType,
+          content: part.content
         });
       }
     });
 
-    // If no HTML content, convert text to HTML
+    // If no HTML content, use text content
     if (!emailData.htmlContent && emailData.textContent) {
-      emailData.htmlContent = `<div style="white-space: pre-wrap;">${emailData.textContent}</div>`;
+      emailData.htmlContent = emailData.textContent.replace(/\n/g, '<br>');
     }
 
-    // Store in database
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
+    console.log('Extracted email data:', {
+      recipient: emailData.recipient,
+      sender: emailData.sender,
+      subject: emailData.subject,
+      hasHtmlContent: !!emailData.htmlContent,
+      hasTextContent: !!emailData.textContent,
+      attachmentCount: emailData.attachments.length
+    });
 
-      // Insert email
-      const emailInsertQuery = `
-        INSERT INTO emails (recipient, sender, subject, html_content, text_content)
-        VALUES ($1, $2, $3, $4, $5)
-        RETURNING id;
-      `;
-      const emailInsertValues = [
-        emailData.recipient,
+    if (!emailData.recipient) {
+      console.error('No recipient specified in the webhook data');
+      return res.status(400).json({ error: 'No recipient specified' });
+    }
+
+    // Clean the recipient email address
+    const cleanRecipient = emailData.recipient.includes('<') ? 
+      emailData.recipient.match(/<(.+)>/)[1] : 
+      emailData.recipient.trim();
+
+    console.log('Cleaned recipient:', cleanRecipient);
+
+    // Find the temporary email in the database
+    const [tempEmails] = await pool.query(
+      'SELECT id FROM temp_emails WHERE email = ? AND expires_at > NOW()',
+      [cleanRecipient]
+    );
+
+    if (tempEmails.length === 0) {
+      console.error('No active temporary email found for recipient:', cleanRecipient);
+      return res.status(404).json({ 
+        error: 'Recipient not found',
+        message: 'No active temporary email found for the specified recipient'
+      });
+    }
+
+    const tempEmailId = tempEmails[0].id;
+    const emailId = uuidv4();
+
+    // Start a transaction
+    const connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    try {
+      // Store the email
+      await connection.query(`
+        INSERT INTO received_emails (
+          id, 
+          temp_email_id, 
+          from_email, 
+          subject, 
+          body_html,
+          body_text,
+          received_at
+        ) VALUES (?, ?, ?, ?, ?, ?, NOW())
+      `, [
+        emailId,
+        tempEmailId,
         emailData.sender,
         emailData.subject,
         emailData.htmlContent,
         emailData.textContent
-      ];
-      const emailResult = await client.query(emailInsertQuery, emailInsertValues);
-      const emailId = emailResult.rows[0].id;
+      ]);
 
-      // Insert attachments
-      if (emailData.attachments.length > 0) {
-        const attachmentInsertQuery = `
-          INSERT INTO email_attachments (email_id, filename, content_type, content)
-          VALUES ($1, $2, $3, $4);
-        `;
-        for (const attachment of emailData.attachments) {
-          await client.query(attachmentInsertQuery, [
-            emailId,
-            attachment.filename,
-            attachment.contentType,
-            attachment.content
-          ]);
-        }
+      // Store attachments if any
+      for (const attachment of emailData.attachments) {
+        const attachmentId = uuidv4();
+        await connection.query(`
+          INSERT INTO email_attachments (
+            id,
+            email_id,
+            content_type,
+            content,
+            created_at
+          ) VALUES (?, ?, ?, ?, NOW())
+        `, [
+          attachmentId,
+          emailId,
+          attachment.contentType,
+          attachment.content
+        ]);
       }
 
-      await client.query('COMMIT');
-      res.status(200).json({ success: true, message: 'Email processed successfully' });
+      await connection.commit();
+      console.log('Email and attachments stored successfully');
+
+      res.status(200).json({
+        message: 'Email received and stored successfully',
+        emailId,
+        recipient: cleanRecipient
+      });
     } catch (error) {
-      await client.query('ROLLBACK');
+      await connection.rollback();
       throw error;
     } finally {
-      client.release();
+      connection.release();
     }
   } catch (error) {
     console.error('Webhook processing error:', error);
+    console.error('Error stack:', error.stack);
+    
     res.status(500).json({
       error: 'Internal server error',
       message: 'Failed to process the incoming email'
