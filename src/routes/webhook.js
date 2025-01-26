@@ -1,6 +1,6 @@
 import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
-import { pool } from '../db/init.js';
+import { pool } from '../db/init.js';  // Updated import statement
 
 const router = express.Router();
 
