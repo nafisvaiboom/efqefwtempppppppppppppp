@@ -1,6 +1,6 @@
 import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
-import { pool } from '../db/init.js';  // Updated import statement
+import { pool } from '../db/init.js';
 
 const router = express.Router();
 
@@ -78,7 +78,6 @@ function parseEmailContent(rawContent) {
   }
 }
 
-// Webhook route for incoming emails
 router.post('/email/incoming', express.urlencoded({ extended: true }), async (req, res) => {
   console.log('Received webhook request');
   console.log('Content-Type:', req.headers['content-type']);
@@ -116,15 +115,6 @@ router.post('/email/incoming', express.urlencoded({ extended: true }), async (re
       emailData.htmlContent = emailData.textContent.replace(/\n/g, '<br>');
     }
 
-    console.log('Extracted email data:', {
-      recipient: emailData.recipient,
-      sender: emailData.sender,
-      subject: emailData.subject,
-      hasHtmlContent: !!emailData.htmlContent,
-      hasTextContent: !!emailData.textContent,
-      attachmentCount: emailData.attachments.length
-    });
-
     if (!emailData.recipient) {
       console.error('No recipient specified in the webhook data');
       return res.status(400).json({ error: 'No recipient specified' });
@@ -134,8 +124,6 @@ router.post('/email/incoming', express.urlencoded({ extended: true }), async (re
     const cleanRecipient = emailData.recipient.includes('<') ? 
       emailData.recipient.match(/<(.+)>/)[1] : 
       emailData.recipient.trim();
-
-    console.log('Cleaned recipient:', cleanRecipient);
 
     // Find the temporary email in the database
     const [tempEmails] = await pool.query(
