@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import helmet from 'helmet';
 import { initializeDatabase, checkDatabaseConnection } from './db/init.js';
 import { cleanupOldEmails } from './utils/cleanup.js';
 import authRoutes from './routes/auth.js';
@@ -8,7 +9,6 @@ import emailRoutes from './routes/emails.js';
 import domainRoutes from './routes/domains.js';
 import webhookRoutes from './routes/webhook.js';
 import messageRoutes from './routes/messages.js';
-import helmet from 'helmet';
 
 dotenv.config();
 
@@ -39,14 +39,12 @@ app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" }
 }));
 
-// CORS configuration for production
+// CORS configuration
 const corsOptions = {
-  origin: process.env.NODE_ENV === 'production' 
-    ? ['https://boomlify.com']
-    : '*',
+  origin: process.env.CORS_ORIGINS ? process.env.CORS_ORIGINS.split(',') : '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: false,
+  credentials: true,
   maxAge: 86400
 };
 
@@ -96,15 +94,6 @@ app.use('/domains', domainRoutes);
 app.use('/webhook', webhookRoutes);
 app.use('/messages', messageRoutes);
 
-// Error handling middleware
-app.use((err, req, res, next) => {
-  console.error('Global error handler:', err);
-  res.status(500).json({ 
-    error: 'Internal server error',
-    message: process.env.NODE_ENV === 'development' ? err.message : undefined
-  });
-});
-
 // Schedule cleanup to run every 24 hours
 const CLEANUP_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
 
@@ -119,10 +108,19 @@ function scheduleCleanup() {
   }, CLEANUP_INTERVAL);
 }
 
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error('Global error handler:', err);
+  res.status(500).json({ 
+    error: 'Internal server error',
+    message: process.env.NODE_ENV === 'development' ? err.message : 'Something went wrong'
+  });
+});
+
 // Initialize database and start server
 let server;
 initializeDatabase().then(() => {
-  server = app.listen(port, () => {
+  server = app.listen(port, '0.0.0.0', () => {
     console.log(`Server running on port ${port}`);
     scheduleCleanup();
     console.log('Email cleanup scheduler started');
