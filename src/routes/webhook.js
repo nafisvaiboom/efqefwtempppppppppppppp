@@ -1,80 +1,58 @@
 import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
-import { pool } from '../db/init.js';
+import crypto from 'crypto';
+import pool from '../db/init.js';
 
 const router = express.Router();
 
-// Helper function to parse email content
-function parseEmailContent(rawContent) {
+function verifyWebhookSignature(formData) {
+  console.log('Starting webhook signature verification');
+  
   try {
-    // Extract headers
-    const [headers, ...bodyParts] = rawContent.split('\n\n');
-    const headerLines = headers.split('\n');
-    
-    const parsedHeaders = {};
-    let currentHeader = '';
-    
-    headerLines.forEach(line => {
-      if (line.startsWith(' ') && currentHeader) {
-        // Continue previous header
-        parsedHeaders[currentHeader] += line.trim();
-      } else {
-        const match = line.match(/^([\w-]+):\s*(.*)$/);
-        if (match) {
-          currentHeader = match[1].toLowerCase();
-          parsedHeaders[currentHeader] = match[2];
-        }
-      }
+    // Extract signature data from form data
+    const timestamp = formData['timestamp'];
+    const token = formData['token'];
+    const signature = formData['signature'];
+
+    console.log('Received signature data:', {
+      timestamp,
+      token,
+      signature: signature ? `${signature.substring(0, 8)}...` : 'missing',
+      hasSigningKey: !!process.env.MAILGUN_WEBHOOK_SIGNING_KEY
     });
 
-    // Find boundary if multipart
-    let boundary = '';
-    const contentType = parsedHeaders['content-type'] || '';
-    const boundaryMatch = contentType.match(/boundary="?([^";\s]+)"?/);
-    if (boundaryMatch) {
-      boundary = boundaryMatch[1];
+    // Verify all required components are present
+    if (!timestamp || !token || !signature) {
+      console.error('Missing required signature components:', {
+        hasTimestamp: !!timestamp,
+        hasToken: !!token,
+        hasSignature: !!signature
+      });
+      return false;
     }
 
-    // Parse body parts
-    const parts = [];
-    if (boundary) {
-      const bodyContent = bodyParts.join('\n\n');
-      const multipartSections = bodyContent.split('--' + boundary);
-      
-      multipartSections.forEach(section => {
-        if (section.trim() && !section.includes('--')) {
-          const [partHeaders, ...partContent] = section.trim().split('\n\n');
-          const contentTypeMatch = partHeaders.match(/Content-Type:\s*([^;\n]+)/i);
-          
-          if (contentTypeMatch) {
-            parts.push({
-              contentType: contentTypeMatch[1].trim(),
-              content: partContent.join('\n\n').trim()
-            });
-          }
-        }
-      });
-    } else {
-      // Single part email
-      parts.push({
-        contentType: parsedHeaders['content-type'] || 'text/plain',
-        content: bodyParts.join('\n\n')
-      });
+    // Verify signing key is configured
+    if (!process.env.MAILGUN_WEBHOOK_SIGNING_KEY) {
+      console.error('MAILGUN_WEBHOOK_SIGNING_KEY environment variable is not set');
+      return false;
     }
 
-    return {
-      headers: parsedHeaders,
-      parts: parts
-    };
+    // Construct the signature string exactly as Mailgun does
+    const encodedToken = crypto
+      .createHmac('sha256', process.env.MAILGUN_WEBHOOK_SIGNING_KEY)
+      .update(timestamp + token)
+      .digest('hex');
+
+    console.log('Signature verification:', {
+      computed: `${encodedToken.substring(0, 8)}...`,
+      received: `${signature.substring(0, 8)}...`,
+      matches: encodedToken === signature
+    });
+
+    return encodedToken === signature;
   } catch (error) {
-    console.error('Error parsing email content:', error);
-    return {
-      headers: {},
-      parts: [{
-        contentType: 'text/plain',
-        content: rawContent
-      }]
-    };
+    console.error('Error during signature verification:', error);
+    return false;
   }
 }
 
@@ -83,37 +61,41 @@ router.post('/email/incoming', express.urlencoded({ extended: true }), async (re
   console.log('Content-Type:', req.headers['content-type']);
   
   try {
-    const rawContent = req.body.body;
-    const parsedEmail = parseEmailContent(rawContent);
+    // Log the raw body and parsed form data
+    console.log('Raw body type:', typeof req.body);
+    console.log('Form data keys:', Object.keys(req.body));
+
+    // Verify the webhook signature
+    const isValid = verifyWebhookSignature(req.body);
     
-    // Extract email data
+    if (!isValid) {
+      console.error('Webhook signature verification failed');
+      return res.status(401).json({ 
+        error: 'Invalid webhook signature',
+        message: 'The webhook signature could not be verified'
+      });
+    }
+
+    console.log('Webhook signature verified successfully');
+
+    // Extract email data from the form
     const emailData = {
-      recipient: req.body.recipient,
-      sender: req.body.sender,
-      subject: req.body.subject || parsedEmail.headers.subject || 'No Subject',
-      htmlContent: '',
-      textContent: '',
-      attachments: []
+      recipient: req.body['recipient'],
+      sender: req.body['sender'] || req.body['from'],
+      subject: req.body['subject'],
+      bodyHtml: req.body['body-html'],
+      bodyPlain: req.body['body-plain'],
+      timestamp: req.body['timestamp'],
+      token: req.body['token']
     };
 
-    // Process email parts
-    parsedEmail.parts.forEach(part => {
-      if (part.contentType.includes('text/html')) {
-        emailData.htmlContent = part.content;
-      } else if (part.contentType.includes('text/plain')) {
-        emailData.textContent = part.content;
-      } else if (part.contentType.includes('image/') || part.contentType.includes('application/')) {
-        emailData.attachments.push({
-          contentType: part.contentType,
-          content: part.content
-        });
-      }
+    console.log('Extracted email data:', {
+      recipient: emailData.recipient,
+      sender: emailData.sender,
+      subject: emailData.subject,
+      hasHtmlBody: !!emailData.bodyHtml,
+      hasPlainBody: !!emailData.bodyPlain
     });
-
-    // If no HTML content, use text content
-    if (!emailData.htmlContent && emailData.textContent) {
-      emailData.htmlContent = emailData.textContent.replace(/\n/g, '<br>');
-    }
 
     if (!emailData.recipient) {
       console.error('No recipient specified in the webhook data');
@@ -124,6 +106,8 @@ router.post('/email/incoming', express.urlencoded({ extended: true }), async (re
     const cleanRecipient = emailData.recipient.includes('<') ? 
       emailData.recipient.match(/<(.+)>/)[1] : 
       emailData.recipient.trim();
+
+    console.log('Cleaned recipient:', cleanRecipient);
 
     // Find the temporary email in the database
     const [tempEmails] = await pool.query(
@@ -142,64 +126,75 @@ router.post('/email/incoming', express.urlencoded({ extended: true }), async (re
     const tempEmailId = tempEmails[0].id;
     const emailId = uuidv4();
 
-    // Start a transaction
-    const connection = await pool.getConnection();
-    await connection.beginTransaction();
+    console.log('Storing email:', {
+      id: emailId,
+      tempEmailId,
+      recipient: cleanRecipient
+    });
 
-    try {
-      // Store the email
-      await connection.query(`
-        INSERT INTO received_emails (
-          id, 
-          temp_email_id, 
-          from_email, 
-          subject, 
-          body_html,
-          body_text,
-          received_at
-        ) VALUES (?, ?, ?, ?, ?, ?, NOW())
-      `, [
-        emailId,
-        tempEmailId,
-        emailData.sender,
-        emailData.subject,
-        emailData.htmlContent,
-        emailData.textContent
-      ]);
+    // Store the email in the database
+    await pool.query(`
+      INSERT INTO received_emails (
+        id, 
+        temp_email_id, 
+        from_email, 
+        subject, 
+        body, 
+        received_at
+      ) VALUES (?, ?, ?, ?, ?, NOW())
+    `, [
+      emailId,
+      tempEmailId,
+      emailData.sender,
+      emailData.subject,
+      emailData.bodyHtml || emailData.bodyPlain || 'No content'
+    ]);
 
-      // Store attachments if any
-      for (const attachment of emailData.attachments) {
-        const attachmentId = uuidv4();
-        await connection.query(`
-          INSERT INTO email_attachments (
-            id,
-            email_id,
-            content_type,
-            content,
-            created_at
-          ) VALUES (?, ?, ?, ?, NOW())
-        `, [
-          attachmentId,
-          emailId,
-          attachment.contentType,
-          attachment.content
-        ]);
+    // Handle attachments if present
+    if (req.body['attachments']) {
+      try {
+        const attachments = JSON.parse(req.body['attachments']);
+        
+        for (const attachment of Object.values(attachments)) {
+          const attachmentId = uuidv4();
+          
+          await pool.query(`
+            INSERT INTO email_attachments (
+              id,
+              email_id,
+              filename,
+              content_type,
+              size,
+              url
+            ) VALUES (?, ?, ?, ?, ?, ?)
+          `, [
+            attachmentId,
+            emailId,
+            attachment.name,
+            attachment['content-type'],
+            attachment.size,
+            attachment.url
+          ]);
+
+          console.log('Stored attachment:', {
+            id: attachmentId,
+            filename: attachment.name,
+            size: attachment.size
+          });
+        }
+      } catch (error) {
+        console.error('Failed to process attachments:', error);
+        // Continue processing even if attachment storage fails
       }
-
-      await connection.commit();
-      console.log('Email and attachments stored successfully');
-
-      res.status(200).json({
-        message: 'Email received and stored successfully',
-        emailId,
-        recipient: cleanRecipient
-      });
-    } catch (error) {
-      await connection.rollback();
-      throw error;
-    } finally {
-      connection.release();
     }
+
+    console.log('Email processed and stored successfully');
+    
+    res.status(200).json({
+      message: 'Email received and stored successfully',
+      emailId,
+      recipient: cleanRecipient
+    });
   } catch (error) {
     console.error('Webhook processing error:', error);
     console.error('Error stack:', error.stack);

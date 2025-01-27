@@ -1,7 +1,7 @@
 import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { authenticateToken, requireAdmin } from '../middleware/auth.js';
-import { pool } from '../db/init.js';  // Updated import statement
+import pool from '../db/init.js';
 
 const router = express.Router();
 
