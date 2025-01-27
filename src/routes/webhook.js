@@ -1,95 +1,51 @@
 import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { pool } from '../db/init.js';
+import { simpleParser } from 'mailparser';
+import iconv from 'iconv-lite';
 
 const router = express.Router();
 
-// Helper function to parse email content
-function parseEmailContent(rawContent) {
+async function parseEmailContent(rawContent) {
   try {
-    // Log raw content for debugging
-    console.log('Raw email content:', rawContent);
-
-    // Extract headers and body
-    const [headers, ...bodyParts] = rawContent.split('\n\n');
-    const headerLines = headers.split('\n');
-    
-    const parsedHeaders = {};
-    let currentHeader = '';
-    
-    headerLines.forEach(line => {
-      if (line.startsWith(' ') && currentHeader) {
-        parsedHeaders[currentHeader] += line.trim();
-      } else {
-        const match = line.match(/^([\w-]+):\s*(.*)$/);
-        if (match) {
-          currentHeader = match[1].toLowerCase();
-          parsedHeaders[currentHeader] = match[2];
-        }
-      }
-    });
-
-    // Find boundary if multipart
-    let boundary = '';
-    const contentType = parsedHeaders['content-type'] || '';
-    const boundaryMatch = contentType.match(/boundary="?([^";\s]+)"?/);
-    if (boundaryMatch) {
-      boundary = boundaryMatch[1];
-    }
-
-    // Parse body parts
-    let htmlContent = '';
-    let textContent = '';
-    let attachments = [];
-
-    if (boundary) {
-      const bodyContent = bodyParts.join('\n\n');
-      const multipartSections = bodyContent.split('--' + boundary);
-      
-      multipartSections.forEach(section => {
-        if (section.trim() && !section.includes('--')) {
-          const [partHeaders, ...partContent] = section.trim().split('\n\n');
-          const contentTypeMatch = partHeaders.match(/Content-Type:\s*([^;\n]+)/i);
-          
-          if (contentTypeMatch) {
-            const partType = contentTypeMatch[1].trim().toLowerCase();
-            const content = partContent.join('\n\n').trim();
-
-            if (partType === 'text/html') {
-              htmlContent = content;
-            } else if (partType === 'text/plain') {
-              textContent = content;
-            } else if (partType.startsWith('image/') || partType.startsWith('application/')) {
-              attachments.push({
-                contentType: partType,
-                content: content
-              });
-            }
-          }
-        }
-      });
-    } else {
-      // Single part email
-      textContent = bodyParts.join('\n\n');
-      // Try to detect if content is HTML
-      if (textContent.includes('<!DOCTYPE html>') || textContent.includes('<html')) {
-        htmlContent = textContent;
-        textContent = textContent.replace(/<[^>]*>/g, '');
+    // Decode content if needed
+    let decodedContent = rawContent;
+    if (typeof rawContent === 'string') {
+      try {
+        // Try UTF-8 first
+        decodedContent = iconv.decode(Buffer.from(rawContent), 'utf8');
+      } catch (err) {
+        // Fallback to latin1
+        decodedContent = iconv.decode(Buffer.from(rawContent), 'latin1');
       }
     }
+
+    // Parse email using mailparser
+    const parsed = await simpleParser(decodedContent);
 
     return {
-      headers: parsedHeaders,
-      html: htmlContent,
-      text: textContent,
-      attachments
+      headers: parsed.headers,
+      subject: parsed.subject,
+      from: parsed.from?.text || '',
+      to: parsed.to?.text || '',
+      text: parsed.text,
+      html: parsed.html,
+      attachments: parsed.attachments.map(attachment => ({
+        filename: attachment.filename,
+        contentType: attachment.contentType,
+        size: attachment.size,
+        content: attachment.content.toString('base64')
+      }))
     };
   } catch (error) {
-    console.error('Error parsing email content:', error);
+    console.error('Error parsing email:', error);
     return {
       headers: {},
-      html: '',
+      subject: 'Unable to parse subject',
+      from: '',
+      to: '',
       text: rawContent,
+      html: '',
       attachments: []
     };
   }
@@ -102,16 +58,16 @@ router.post('/email/incoming', express.urlencoded({ extended: true }), async (re
   
   try {
     const rawContent = req.body.body;
-    const parsedEmail = parseEmailContent(rawContent);
+    const parsedEmail = await parseEmailContent(rawContent);
     
     // Extract email data
     const emailData = {
-      recipient: req.body.recipient,
-      sender: req.body.sender,
-      subject: req.body.subject || parsedEmail.headers.subject || 'No Subject',
-      body_html: parsedEmail.html,
-      body_text: parsedEmail.text,
-      attachments: parsedEmail.attachments
+      recipient: req.body.recipient || parsedEmail.to,
+      sender: req.body.sender || parsedEmail.from,
+      subject: parsedEmail.subject || 'No Subject',
+      body_html: parsedEmail.html || '',
+      body_text: parsedEmail.text || '',
+      attachments: parsedEmail.attachments || []
     };
 
     // Clean the recipient email address
@@ -168,14 +124,18 @@ router.post('/email/incoming', express.urlencoded({ extended: true }), async (re
           INSERT INTO email_attachments (
             id,
             email_id,
+            filename,
             content_type,
+            size,
             content,
             created_at
-          ) VALUES (?, ?, ?, ?, NOW())
+          ) VALUES (?, ?, ?, ?, ?, ?, NOW())
         `, [
           attachmentId,
           emailId,
+          attachment.filename,
           attachment.contentType,
+          attachment.size,
           attachment.content
         ]);
       }
