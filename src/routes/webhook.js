@@ -7,7 +7,10 @@ const router = express.Router();
 // Helper function to parse email content
 function parseEmailContent(rawContent) {
   try {
-    // Extract headers
+    // Log raw content for debugging
+    console.log('Raw email content:', rawContent);
+
+    // Extract headers and body
     const [headers, ...bodyParts] = rawContent.split('\n\n');
     const headerLines = headers.split('\n');
     
@@ -16,7 +19,6 @@ function parseEmailContent(rawContent) {
     
     headerLines.forEach(line => {
       if (line.startsWith(' ') && currentHeader) {
-        // Continue previous header
         parsedHeaders[currentHeader] += line.trim();
       } else {
         const match = line.match(/^([\w-]+):\s*(.*)$/);
@@ -36,7 +38,10 @@ function parseEmailContent(rawContent) {
     }
 
     // Parse body parts
-    const parts = [];
+    let htmlContent = '';
+    let textContent = '';
+    let attachments = [];
+
     if (boundary) {
       const bodyContent = bodyParts.join('\n\n');
       const multipartSections = bodyContent.split('--' + boundary);
@@ -47,33 +52,45 @@ function parseEmailContent(rawContent) {
           const contentTypeMatch = partHeaders.match(/Content-Type:\s*([^;\n]+)/i);
           
           if (contentTypeMatch) {
-            parts.push({
-              contentType: contentTypeMatch[1].trim(),
-              content: partContent.join('\n\n').trim()
-            });
+            const partType = contentTypeMatch[1].trim().toLowerCase();
+            const content = partContent.join('\n\n').trim();
+
+            if (partType === 'text/html') {
+              htmlContent = content;
+            } else if (partType === 'text/plain') {
+              textContent = content;
+            } else if (partType.startsWith('image/') || partType.startsWith('application/')) {
+              attachments.push({
+                contentType: partType,
+                content: content
+              });
+            }
           }
         }
       });
     } else {
       // Single part email
-      parts.push({
-        contentType: parsedHeaders['content-type'] || 'text/plain',
-        content: bodyParts.join('\n\n')
-      });
+      textContent = bodyParts.join('\n\n');
+      // Try to detect if content is HTML
+      if (textContent.includes('<!DOCTYPE html>') || textContent.includes('<html')) {
+        htmlContent = textContent;
+        textContent = textContent.replace(/<[^>]*>/g, '');
+      }
     }
 
     return {
       headers: parsedHeaders,
-      parts: parts
+      html: htmlContent,
+      text: textContent,
+      attachments
     };
   } catch (error) {
     console.error('Error parsing email content:', error);
     return {
       headers: {},
-      parts: [{
-        contentType: 'text/plain',
-        content: rawContent
-      }]
+      html: '',
+      text: rawContent,
+      attachments: []
     };
   }
 }
@@ -81,50 +98,21 @@ function parseEmailContent(rawContent) {
 router.post('/email/incoming', express.urlencoded({ extended: true }), async (req, res) => {
   console.log('Received webhook request');
   console.log('Content-Type:', req.headers['content-type']);
+  console.log('Request body:', req.body);
   
   try {
-    // Log the request body
-    console.log('Webhook request body:', req.body);
-
     const rawContent = req.body.body;
     const parsedEmail = parseEmailContent(rawContent);
-
-    // Log the parsed email content
-    console.log('Parsed email content:', parsedEmail);
     
     // Extract email data
     const emailData = {
       recipient: req.body.recipient,
       sender: req.body.sender,
       subject: req.body.subject || parsedEmail.headers.subject || 'No Subject',
-      htmlContent: '',
-      textContent: '',
-      attachments: []
+      body_html: parsedEmail.html,
+      body_text: parsedEmail.text,
+      attachments: parsedEmail.attachments
     };
-
-    // Process email parts
-    parsedEmail.parts.forEach(part => {
-      if (part.contentType.includes('text/html')) {
-        emailData.htmlContent = part.content;
-      } else if (part.contentType.includes('text/plain')) {
-        emailData.textContent = part.content;
-      } else if (part.contentType.includes('image/') || part.contentType.includes('application/')) {
-        emailData.attachments.push({
-          contentType: part.contentType,
-          content: part.content
-        });
-      }
-    });
-
-    // If no HTML content, use text content
-    if (!emailData.htmlContent && emailData.textContent) {
-      emailData.htmlContent = emailData.textContent.replace(/\n/g, '<br>');
-    }
-
-    if (!emailData.recipient) {
-      console.error('No recipient specified in the webhook data');
-      return res.status(400).json({ error: 'No recipient specified' });
-    }
 
     // Clean the recipient email address
     const cleanRecipient = emailData.recipient.includes('<') ? 
@@ -169,8 +157,8 @@ router.post('/email/incoming', express.urlencoded({ extended: true }), async (re
         tempEmailId,
         emailData.sender,
         emailData.subject,
-        emailData.htmlContent,
-        emailData.textContent
+        emailData.body_html,
+        emailData.body_text
       ]);
 
       // Store attachments if any
