@@ -1,3 +1,16 @@
+// Add this at the top of the file
+pool.on('error', (err) => {
+  console.error('Unexpected database error:', err);
+  if (err.code === 'PROTOCOL_CONNECTION_LOST') {
+    console.error('Database connection was closed.');
+  }
+  if (err.code === 'ER_CON_COUNT_ERROR') {
+    console.error('Database has too many connections.');
+  }
+  if (err.code === 'ECONNREFUSED') {
+    console.error('Database connection was refused.');
+  }
+});
 import mysql from 'mysql2/promise';
 import dotenv from 'dotenv';
 
