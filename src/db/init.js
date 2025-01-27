@@ -32,6 +32,19 @@ pool.on('error', (err) => {
   }
 });
 
+// Check database connection health
+export async function checkDatabaseConnection() {
+  try {
+    const connection = await pool.getConnection();
+    await connection.query('SELECT 1');
+    connection.release();
+    return true;
+  } catch (error) {
+    console.error('Database health check failed:', error);
+    return false;
+  }
+}
+
 export async function initializeDatabase() {
   try {
     console.log('Attempting to connect to database...');
