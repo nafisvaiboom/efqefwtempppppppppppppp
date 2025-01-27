@@ -16,17 +16,14 @@ const port = process.env.PORT || 3000;
 
 // Configure CORS
 app.use(cors({
-  origin: [
-    'https://yourdomain.com',
-    'https://www.yourdomain.com',
-    // Add any other domains that need access
-  ],
+  origin: process.env.CORS_ORIGINS.split(','),
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
 }));
 
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -56,7 +53,7 @@ function scheduleCleanup() {
 
 // Initialize database and start server
 initializeDatabase().then(() => {
-  app.listen(port, () => {
+  app.listen(port, '0.0.0.0', () => {
     console.log(`Server running on port ${port}`);
     scheduleCleanup(); // Start the cleanup schedule
     console.log('Email cleanup scheduler started');
