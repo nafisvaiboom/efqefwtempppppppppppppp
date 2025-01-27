@@ -83,8 +83,14 @@ router.post('/email/incoming', express.urlencoded({ extended: true }), async (re
   console.log('Content-Type:', req.headers['content-type']);
   
   try {
+    // Log the request body
+    console.log('Webhook request body:', req.body);
+
     const rawContent = req.body.body;
     const parsedEmail = parseEmailContent(rawContent);
+
+    // Log the parsed email content
+    console.log('Parsed email content:', parsedEmail);
     
     // Extract email data
     const emailData = {
