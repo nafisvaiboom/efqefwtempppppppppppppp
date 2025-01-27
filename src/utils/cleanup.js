@@ -1,4 +1,4 @@
-import pool from '../db/init.js';
+import { pool } from '../db/init.js';  // Updated import statement
 
 export async function cleanupOldEmails() {
   try {
