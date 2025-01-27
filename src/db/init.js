@@ -98,6 +98,34 @@ export async function initializeDatabase() {
       );
     `);
 
+    // Custom messages table
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS custom_messages (
+        id VARCHAR(36) PRIMARY KEY,
+        message TEXT NOT NULL,
+        type ENUM('info', 'warning', 'success', 'error') NOT NULL DEFAULT 'info',
+        is_active BOOLEAN DEFAULT TRUE,
+        created_by VARCHAR(36) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE,
+        INDEX idx_active_messages (is_active),
+        INDEX idx_created_at (created_at)
+      );
+    `);
+
+    // User dismissed messages table
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS user_dismissed_messages (
+        user_id VARCHAR(36) NOT NULL,
+        message_id VARCHAR(36) NOT NULL,
+        dismissed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (user_id, message_id),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (message_id) REFERENCES custom_messages(id) ON DELETE CASCADE,
+        INDEX idx_user_dismissals (user_id, dismissed_at)
+      );
+    `);
+
     connection.release();
     console.log('Database initialized successfully');
     return pool;
