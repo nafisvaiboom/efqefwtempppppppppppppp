@@ -7,6 +7,11 @@ import { authenticateToken } from '../middleware/auth.js';
 
 const router = express.Router();
 
+// Rest of the code remains the same...
+import express from 'express';
+const router = express.Router();
+
+
 // Register a new user
 router.post('/register', async (req, res) => {
   try {
