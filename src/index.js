@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import helmet from 'helmet';
+import compression from 'compression'; // Import the compression middleware
 import { initializeDatabase, checkDatabaseConnection } from './db/init.js';
 import { cleanupOldEmails } from './utils/cleanup.js';
 import authRoutes from './routes/auth.js';
@@ -24,6 +25,9 @@ if (missingEnvVars.length > 0) {
 
 const app = express();
 const port = process.env.PORT || 3000;
+
+// Use compression middleware
+app.use(compression()); // Compress all responses
 
 // Security middleware
 app.use(helmet({
