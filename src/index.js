@@ -76,3 +76,6 @@ initializeDatabase().then(() => {
 });
 
 export default app;
+// Add these routes before the auth-protected routes
+app.use('/domains/public', domainRoutes);
+app.use('/emails/public', emailRoutes);
