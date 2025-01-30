@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import helmet from 'helmet';
+import compression from 'compression'; // Import compression
 import { initializeDatabase, checkDatabaseConnection, pool } from './db/init.js';
 import { cleanupOldEmails } from './utils/cleanup.js';
 import authRoutes from './routes/auth.js';
@@ -30,9 +31,14 @@ app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" }
 }));
 
-// Configure CORS
+// Add compression middleware
+app.use(compression()); // Add this line
+
+// Update CORS configuration
 app.use(cors({
-  origin: '*', // Allow all origins in development
+  origin: process.env.NODE_ENV === 'production' 
+    ? ['https://boomlify.com'] 
+    : '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
