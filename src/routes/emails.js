@@ -1,7 +1,7 @@
 import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { authenticateToken } from '../middleware/auth.js';
-import { pool } from '../db/init.js';  // Updated import statement
+import { pool } from '../db/init.js';
 
 const router = express.Router();
 
@@ -95,10 +95,10 @@ router.get('/', authenticateToken, async (req, res) => {
   }
 });
 
-export default router;
 // Get public emails (no auth required)
 router.get('/public/:email', async (req, res) => {
   try {
+    res.setHeader('Cache-Control', 'public, max-age=5'); // Cache for 5 seconds
     const [emails] = await pool.query(`
       SELECT re.*, te.email as temp_email
       FROM received_emails re
@@ -113,6 +113,10 @@ router.get('/public/:email', async (req, res) => {
     res.status(400).json({ error: 'Failed to fetch emails' });
   }
 });
+
+// Compress responses
+import compression from 'compression';
+router.use(compression());
 
 // Create public temporary email (no auth required)
 router.post('/public/create', async (req, res) => {
@@ -140,3 +144,5 @@ router.post('/public/create', async (req, res) => {
     res.status(400).json({ error: 'Failed to create temporary email' });
   }
 });
+
+export default router;
