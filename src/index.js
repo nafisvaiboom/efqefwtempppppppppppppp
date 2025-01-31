@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import helmet from 'helmet';
-import compression from 'compression'; // Import compression
+import compression from 'compression';
 import { initializeDatabase, checkDatabaseConnection, pool } from './db/init.js';
 import { cleanupOldEmails } from './utils/cleanup.js';
 import authRoutes from './routes/auth.js';
@@ -32,16 +32,15 @@ app.use(helmet({
 }));
 
 // Add compression middleware
-app.use(compression()); // Add this line
+app.use(compression());
 
 // Update CORS configuration
 app.use(cors({
-  origin: process.env.NODE_ENV === 'production' 
-    ? ['https://boomlify.com'] 
-    : '*',
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'], // Removed 'PATCH'
+  origin: '*', // Allow all origins for public routes
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true
+  credentials: true,
+  exposedHeaders: ['Content-Length', 'X-Requested-With']
 }));
 
 app.use(express.json());
@@ -64,19 +63,15 @@ app.get('/health', async (req, res) => {
   }
 });
 
-// Add these routes before the auth-protected routes
-app.use('/domains/public', domainRoutes);
-app.use('/emails/public', emailRoutes);
-
-// Protected routes
+// Routes
 app.use('/auth', authRoutes);
 app.use('/emails', emailRoutes);
 app.use('/domains', domainRoutes);
 app.use('/webhook', webhookRoutes);
 app.use('/messages', messageRoutes);
 
-// Schedule cleanup to run every 24 hours
-const CLEANUP_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
+// Schedule cleanup
+const CLEANUP_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours
 
 function scheduleCleanup() {
   setInterval(async () => {
