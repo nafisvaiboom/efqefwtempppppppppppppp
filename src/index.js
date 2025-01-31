@@ -39,7 +39,7 @@ app.use(cors({
   origin: process.env.NODE_ENV === 'production' 
     ? ['https://boomlify.com'] 
     : '*',
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'], // Removed 'PATCH'
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
 }));
