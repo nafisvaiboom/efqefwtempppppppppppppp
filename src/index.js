@@ -3,6 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import helmet from 'helmet';
 import compression from 'compression';
+import rateLimit from 'express-rate-limit';
 import { initializeDatabase, checkDatabaseConnection, pool } from './db/init.js';
 import { cleanupOldEmails } from './utils/cleanup.js';
 import authRoutes from './routes/auth.js';
@@ -15,6 +16,13 @@ dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 3000;
+
+// Global rate limiter
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // Limit each IP to 100 requests per windowMs
+  message: { error: 'Too many requests from this IP, please try again later.' }
+});
 
 // Security middleware
 app.use(helmet({
@@ -34,9 +42,12 @@ app.use(helmet({
 // Add compression middleware
 app.use(compression());
 
+// Apply rate limiter to all requests
+app.use(limiter);
+
 // Update CORS configuration
 app.use(cors({
-  origin: '*', // Allow all origins for public routes
+  origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true,
