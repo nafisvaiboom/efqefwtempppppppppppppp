@@ -1,10 +1,11 @@
-export function isBot(req: { get: (header: string) => string | undefined }) {
+// Bot detection utility
+export function isBot(req) {
   const userAgent = req.get('user-agent')?.toLowerCase() || '';
   
   // List of known bot user agents
   const botPatterns = [
     'googlebot',
-    'bingbot',
+    'bingbot', 
     'yandexbot',
     'duckduckbot',
     'slurp',
