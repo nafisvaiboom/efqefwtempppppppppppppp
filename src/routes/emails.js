@@ -2,6 +2,7 @@ import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { authenticateToken } from '../middleware/auth.js';
 import { pool } from '../db/init.js';
+import compression from 'compression';
 
 const router = express.Router();
 
@@ -115,7 +116,6 @@ router.get('/public/:email', async (req, res) => {
 });
 
 // Compress responses
-import compression from 'compression';
 router.use(compression());
 
 // Create public temporary email (no auth required)
