@@ -3,6 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import helmet from 'helmet';
 import compression from 'compression';
+import rateLimit from 'express-rate-limit';
 import { initializeDatabase, checkDatabaseConnection, pool } from './db/init.js';
 import { cleanupOldEmails } from './utils/cleanup.js';
 import authRoutes from './routes/auth.js';
@@ -15,6 +16,16 @@ dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 3000;
+
+// Trust proxy - Add this line
+app.set('trust proxy', 1);
+
+// Global rate limiter
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // Limit each IP to 100 requests per windowMs
+  message: { error: 'Too many requests from this IP, please try again later.' }
+});
 
 // Security middleware
 app.use(helmet({
@@ -34,13 +45,24 @@ app.use(helmet({
 // Add compression middleware
 app.use(compression());
 
+// Apply rate limiter to all requests
+app.use(limiter);
+
+// Security headers middleware
+app.use((req, res, next) => {
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  next();
+});
+
 // Update CORS configuration
 app.use(cors({
-  origin: '*', // Allow all origins for public routes
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  origin: ['https://boomlify.com'],
   credentials: true,
-  exposedHeaders: ['Content-Length', 'X-Requested-With']
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
 app.use(express.json());
