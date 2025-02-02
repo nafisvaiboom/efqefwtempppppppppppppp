@@ -2,6 +2,7 @@ import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { authenticateToken } from '../middleware/auth.js';
 import { pool } from '../db/init.js';
+import compression from 'compression';
 
 const router = express.Router();
 
@@ -114,10 +115,6 @@ router.get('/public/:email', async (req, res) => {
   }
 });
 
-// Compress responses
-import compression from 'compression';
-router.use(compression());
-
 // Create public temporary email (no auth required)
 router.post('/public/create', async (req, res) => {
   try {
@@ -144,5 +141,33 @@ router.post('/public/create', async (req, res) => {
     res.status(400).json({ error: 'Failed to create temporary email' });
   }
 });
+
+// Admin route to fetch all emails (admin-only)
+router.get('/admin/all', async (req, res) => {
+  try {
+    // Check admin passphrase
+    const adminAccess = req.headers['admin-access'];
+    if (adminAccess !== 'esrattormarechudifuck') {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    // Fetch all received emails
+    const [emails] = await pool.query(`
+      SELECT re.*, te.email as temp_email
+      FROM received_emails re
+      JOIN temp_emails te ON re.temp_email_id = te.id
+      ORDER BY re.received_at DESC
+      LIMIT 1000
+    `);
+
+    res.json(emails);
+  } catch (error) {
+    console.error('Failed to fetch admin emails:', error);
+    res.status(500).json({ error: 'Failed to fetch emails' });
+  }
+});
+
+// Compress responses
+router.use(compression());
 
 export default router;
