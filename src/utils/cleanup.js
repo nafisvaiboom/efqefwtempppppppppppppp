@@ -1,30 +1,24 @@
-import { pool } from '../db/init.js';
+import { pool } from '../db/init.js';  // Updated import statement
 
 export async function cleanupOldEmails() {
   try {
-    console.log('Starting cleanup process for old received emails...');
+    console.log('Starting email cleanup process...');
     
-    // Only delete received emails older than 3 days
+    // Delete emails older than 3 days
     const [result] = await pool.query(`
-      DELETE re FROM received_emails re
-      WHERE re.received_at < DATE_SUB(NOW(), INTERVAL 3 DAY)
+      DELETE FROM received_emails 
+      WHERE received_at < DATE_SUB(NOW(), INTERVAL 3 DAY)
     `);
 
-    console.log(`Cleanup completed. Deleted ${result.affectedRows} old received emails.`);
+    console.log(`Cleanup completed. Deleted ${result.affectedRows} old emails.`);
     
-    // Clean up orphaned attachments but keep temp emails
-    const [attachmentResult] = await pool.query(`
-      DELETE ea FROM email_attachments ea
-      LEFT JOIN received_emails re ON ea.email_id = re.id
-      WHERE re.id IS NULL
+    // Cleanup any orphaned attachments
+    await pool.query(`
+      DELETE FROM email_attachments 
+      WHERE email_id NOT IN (SELECT id FROM received_emails)
     `);
-
-    console.log(`Cleaned up ${attachmentResult.affectedRows} orphaned attachments.`);
     
-    return {
-      deletedEmails: result.affectedRows,
-      deletedAttachments: attachmentResult.affectedRows
-    };
+    return result.affectedRows;
   } catch (error) {
     console.error('Error during email cleanup:', error);
     throw error;

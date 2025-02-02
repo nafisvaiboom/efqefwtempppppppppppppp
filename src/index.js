@@ -2,8 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import helmet from 'helmet';
-import compression from 'compression';
-import rateLimit from 'express-rate-limit';
+import compression from 'compression'; // Import compression
 import { initializeDatabase, checkDatabaseConnection, pool } from './db/init.js';
 import { cleanupOldEmails } from './utils/cleanup.js';
 import authRoutes from './routes/auth.js';
@@ -16,16 +15,6 @@ dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 3000;
-
-// Trust proxy - Add this line
-app.set('trust proxy', 1);
-
-// Global rate limiter
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // Limit each IP to 100 requests per windowMs
-  message: { error: 'Too many requests from this IP, please try again later.' }
-});
 
 // Security middleware
 app.use(helmet({
@@ -43,18 +32,16 @@ app.use(helmet({
 }));
 
 // Add compression middleware
-app.use(compression());
-
-// Apply rate limiter to all requests
-app.use(limiter);
+app.use(compression()); // Add this line
 
 // Update CORS configuration
 app.use(cors({
-  origin: '*',
+  origin: process.env.NODE_ENV === 'production' 
+    ? ['https://boomlify.com'] 
+    : '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true,
-  exposedHeaders: ['Content-Length', 'X-Requested-With']
+  credentials: true
 }));
 
 app.use(express.json());
@@ -77,15 +64,19 @@ app.get('/health', async (req, res) => {
   }
 });
 
-// Routes
+// Add these routes before the auth-protected routes
+app.use('/domains/public', domainRoutes);
+app.use('/emails/public', emailRoutes);
+
+// Protected routes
 app.use('/auth', authRoutes);
 app.use('/emails', emailRoutes);
 app.use('/domains', domainRoutes);
 app.use('/webhook', webhookRoutes);
 app.use('/messages', messageRoutes);
 
-// Schedule cleanup
-const CLEANUP_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours
+// Schedule cleanup to run every 24 hours
+const CLEANUP_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
 
 function scheduleCleanup() {
   setInterval(async () => {

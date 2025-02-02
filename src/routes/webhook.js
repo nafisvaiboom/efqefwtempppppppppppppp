@@ -1,52 +1,79 @@
 import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { pool } from '../db/init.js';
-import { simpleParser } from 'mailparser';
-import iconv from 'iconv-lite';
 
 const router = express.Router();
 
-async function parseEmailContent(rawContent) {
+// Helper function to parse email content
+function parseEmailContent(rawContent) {
   try {
-    // Decode content if needed
-    let decodedContent = rawContent;
-    if (typeof rawContent === 'string') {
-      try {
-        // Try UTF-8 first
-        decodedContent = iconv.decode(Buffer.from(rawContent), 'utf8');
-      } catch (err) {
-        // Fallback to latin1
-        decodedContent = iconv.decode(Buffer.from(rawContent), 'latin1');
+    // Extract headers
+    const [headers, ...bodyParts] = rawContent.split('\n\n');
+    const headerLines = headers.split('\n');
+    
+    const parsedHeaders = {};
+    let currentHeader = '';
+    
+    headerLines.forEach(line => {
+      if (line.startsWith(' ') && currentHeader) {
+        // Continue previous header
+        parsedHeaders[currentHeader] += line.trim();
+      } else {
+        const match = line.match(/^([\w-]+):\s*(.*)$/);
+        if (match) {
+          currentHeader = match[1].toLowerCase();
+          parsedHeaders[currentHeader] = match[2];
+        }
       }
+    });
+
+    // Find boundary if multipart
+    let boundary = '';
+    const contentType = parsedHeaders['content-type'] || '';
+    const boundaryMatch = contentType.match(/boundary="?([^";\s]+)"?/);
+    if (boundaryMatch) {
+      boundary = boundaryMatch[1];
     }
 
-    // Parse email using mailparser
-    const parsed = await simpleParser(decodedContent);
+    // Parse body parts
+    const parts = [];
+    if (boundary) {
+      const bodyContent = bodyParts.join('\n\n');
+      const multipartSections = bodyContent.split('--' + boundary);
+      
+      multipartSections.forEach(section => {
+        if (section.trim() && !section.includes('--')) {
+          const [partHeaders, ...partContent] = section.trim().split('\n\n');
+          const contentTypeMatch = partHeaders.match(/Content-Type:\s*([^;\n]+)/i);
+          
+          if (contentTypeMatch) {
+            parts.push({
+              contentType: contentTypeMatch[1].trim(),
+              content: partContent.join('\n\n').trim()
+            });
+          }
+        }
+      });
+    } else {
+      // Single part email
+      parts.push({
+        contentType: parsedHeaders['content-type'] || 'text/plain',
+        content: bodyParts.join('\n\n')
+      });
+    }
 
     return {
-      headers: parsed.headers,
-      subject: parsed.subject,
-      from: parsed.from?.text || '',
-      to: parsed.to?.text || '',
-      text: parsed.text,
-      html: parsed.html,
-      attachments: parsed.attachments.map(attachment => ({
-        filename: attachment.filename,
-        contentType: attachment.contentType,
-        size: attachment.size,
-        content: attachment.content.toString('base64')
-      }))
+      headers: parsedHeaders,
+      parts: parts
     };
   } catch (error) {
-    console.error('Error parsing email:', error);
+    console.error('Error parsing email content:', error);
     return {
       headers: {},
-      subject: 'Unable to parse subject',
-      from: '',
-      to: '',
-      text: rawContent,
-      html: '',
-      attachments: []
+      parts: [{
+        contentType: 'text/plain',
+        content: rawContent
+      }]
     };
   }
 }
@@ -54,21 +81,44 @@ async function parseEmailContent(rawContent) {
 router.post('/email/incoming', express.urlencoded({ extended: true }), async (req, res) => {
   console.log('Received webhook request');
   console.log('Content-Type:', req.headers['content-type']);
-  console.log('Request body:', req.body);
   
   try {
     const rawContent = req.body.body;
-    const parsedEmail = await parseEmailContent(rawContent);
+    const parsedEmail = parseEmailContent(rawContent);
     
     // Extract email data
     const emailData = {
-      recipient: req.body.recipient || parsedEmail.to,
-      sender: req.body.sender || parsedEmail.from,
-      subject: parsedEmail.subject || 'No Subject',
-      body_html: parsedEmail.html || '',
-      body_text: parsedEmail.text || '',
-      attachments: parsedEmail.attachments || []
+      recipient: req.body.recipient,
+      sender: req.body.sender,
+      subject: req.body.subject || parsedEmail.headers.subject || 'No Subject',
+      htmlContent: '',
+      textContent: '',
+      attachments: []
     };
+
+    // Process email parts
+    parsedEmail.parts.forEach(part => {
+      if (part.contentType.includes('text/html')) {
+        emailData.htmlContent = part.content;
+      } else if (part.contentType.includes('text/plain')) {
+        emailData.textContent = part.content;
+      } else if (part.contentType.includes('image/') || part.contentType.includes('application/')) {
+        emailData.attachments.push({
+          contentType: part.contentType,
+          content: part.content
+        });
+      }
+    });
+
+    // If no HTML content, use text content
+    if (!emailData.htmlContent && emailData.textContent) {
+      emailData.htmlContent = emailData.textContent.replace(/\n/g, '<br>');
+    }
+
+    if (!emailData.recipient) {
+      console.error('No recipient specified in the webhook data');
+      return res.status(400).json({ error: 'No recipient specified' });
+    }
 
     // Clean the recipient email address
     const cleanRecipient = emailData.recipient.includes('<') ? 
@@ -113,8 +163,8 @@ router.post('/email/incoming', express.urlencoded({ extended: true }), async (re
         tempEmailId,
         emailData.sender,
         emailData.subject,
-        emailData.body_html,
-        emailData.body_text
+        emailData.htmlContent,
+        emailData.textContent
       ]);
 
       // Store attachments if any
@@ -124,18 +174,14 @@ router.post('/email/incoming', express.urlencoded({ extended: true }), async (re
           INSERT INTO email_attachments (
             id,
             email_id,
-            filename,
             content_type,
-            size,
             content,
             created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, NOW())
+          ) VALUES (?, ?, ?, ?, NOW())
         `, [
           attachmentId,
           emailId,
-          attachment.filename,
           attachment.contentType,
-          attachment.size,
           attachment.content
         ]);
       }
